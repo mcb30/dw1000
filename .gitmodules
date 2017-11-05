@@ -1,0 +1,3 @@
+[submodule "rpi/circuit/lib/cvra"]
+	path = rpi/circuit/lib/cvra
+	url = git@github.com:cvra/kicad-lib.git
