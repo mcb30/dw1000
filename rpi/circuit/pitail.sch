@@ -120,17 +120,6 @@ F 3 "" V 4600 5800 50  0001 C CNN
 	1    4600 5800
 	-1   0    0    -1  
 $EndComp
-$Comp
-L CONN_02X11 J1
-U 1 1 59FFA1DE
-P 4500 5050
-F 0 "J1" H 4500 5650 50  0000 C CNN
-F 1 "CONN_02X11" V 4500 5050 50  0000 C CNN
-F 2 "" H 4500 3850 50  0001 C CNN
-F 3 "" H 4500 3850 50  0001 C CNN
-	1    4500 5050
-	0    -1   1    0   
-$EndComp
 Wire Wire Line
 	3450 3550 6000 3550
 Wire Wire Line
@@ -152,15 +141,7 @@ Wire Wire Line
 Wire Wire Line
 	5600 3350 6000 3350
 Wire Wire Line
-	3450 3750 5600 3750
-Wire Wire Line
-	5600 3750 5600 5150
-Wire Wire Line
-	5600 5150 8050 5150
-Wire Wire Line
-	8050 5150 8050 3550
-Wire Wire Line
-	8050 3550 7800 3550
+	8150 3450 8150 5550
 Wire Wire Line
 	6600 4650 6600 4750
 Wire Wire Line
@@ -286,7 +267,6 @@ Wire Wire Line
 	1350 2600 1350 3250
 Wire Wire Line
 	1350 3250 1450 3250
-NoConn ~ 4800 5300
 NoConn ~ 4900 5300
 NoConn ~ 5000 5300
 $Comp
@@ -458,7 +438,6 @@ NoConn ~ 7800 3050
 NoConn ~ 7800 3150
 NoConn ~ 7800 3250
 NoConn ~ 7800 3350
-NoConn ~ 7800 3450
 NoConn ~ 7800 3650
 NoConn ~ 7800 3750
 $Comp
@@ -680,4 +659,37 @@ Wire Wire Line
 Wire Wire Line
 	6800 1950 6700 1950
 Connection ~ 6700 1950
+Wire Wire Line
+	5100 4800 5100 3750
+Wire Wire Line
+	5100 3750 3450 3750
+Wire Wire Line
+	4800 5300 4800 5550
+Wire Wire Line
+	4800 5550 8150 5550
+Wire Wire Line
+	7800 3450 8150 3450
+Wire Wire Line
+	7800 3550 8050 3550
+Wire Wire Line
+	8050 3550 8050 5450
+Wire Wire Line
+	8050 5450 5100 5450
+Wire Wire Line
+	5100 5450 5100 5300
+Text Label 6100 5550 0    60   ~ 0
+RSTXn
+Text Label 6100 5450 0    60   ~ 0
+IRQX
+$Comp
+L CONN_02X12 J1
+U 1 1 5A00C401
+P 4550 5050
+F 0 "J1" H 4550 5700 50  0000 C CNN
+F 1 "CONN_02X12" V 4550 5050 50  0000 C CNN
+F 2 "" H 4550 3850 50  0001 C CNN
+F 3 "" H 4550 3850 50  0001 C CNN
+	1    4550 5050
+	0    -1   1    0   
+$EndComp
 $EndSCHEMATC
