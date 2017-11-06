@@ -1,0 +1,3 @@
+(fp_lib_table
+  (lib (name _div)(type KiCad)(uri lib/cvra/footprints/_div.pretty)(options "")(descr ""))
+)
