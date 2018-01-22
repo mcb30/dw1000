@@ -1,3 +1,6 @@
 [submodule "rpi/circuit/lib/cvra"]
 	path = rpi/circuit/lib/cvra
 	url = https://github.com/cvra/kicad-lib.git
+[submodule "rpi/circuit/lib/pihat"]
+	path = rpi/circuit/lib/pihat
+	url = https://github.com/xesscorp/RPi_Hat.pretty.git
