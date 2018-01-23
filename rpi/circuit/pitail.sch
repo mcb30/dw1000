@@ -791,9 +791,6 @@ Wire Wire Line
 Wire Wire Line
 	6700 1850 6700 2050
 Wire Wire Line
-	6800 1950 6800 2050
-Connection ~ 6700 1950
-Wire Wire Line
 	5100 4800 5100 3750
 Wire Wire Line
 	5100 3750 3450 3750
@@ -895,8 +892,6 @@ $EndComp
 Wire Wire Line
 	7100 4650 7100 4750
 Wire Wire Line
-	6700 1950 6800 1950
-Wire Wire Line
 	4800 7200 5000 7200
 Wire Wire Line
 	4800 6850 5000 6850
@@ -904,4 +899,5 @@ Wire Wire Line
 	4800 6500 5000 6500
 Wire Wire Line
 	4800 6150 5000 6150
+NoConn ~ 6800 2050
 $EndSCHEMATC
