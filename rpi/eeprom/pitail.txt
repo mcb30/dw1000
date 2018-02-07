@@ -1,0 +1,40 @@
+# Board identification
+#
+vendor		"Unipart Digital"
+product		"Pi Tail"
+product_id	0x1000
+product_ver	0x00a0
+
+# Autogenerate UUID for each board
+#
+product_uuid	00000000-0000-0000-0000-000000000000
+
+# No change to GPIO configuration
+#
+gpio_drive	0
+gpio_slew	0
+gpio_hysteresis	0
+
+# Board does not provide power
+#
+back_power	0
+
+# SPI0 CE0
+#
+setgpio		8	ALT0	DEFAULT
+
+# SPI0 MISO
+#
+setgpio		9	ALT0	DEFAULT
+
+# SPI0 MOSI
+#
+setgpio		10	ALT0	DEFAULT
+
+# SPI0 SCLK
+#
+setgpio		11	ALT0	DEFAULT
+
+# IRQ
+#
+setgpio		25	INPUT	DOWN
