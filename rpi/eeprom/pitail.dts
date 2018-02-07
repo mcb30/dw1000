@@ -1,0 +1,86 @@
+/* -*- c -*-
+ *
+ * Copyright (C) 2018 Michael Brown <mbrown@fensystems.co.uk>.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation; either version 2 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ * 02110-1301, USA.
+ *
+ */
+
+/*
+ * Device Tree Overlay for Raspberry Pi IEEE 802.15.4 Tail board
+ *
+ * This board comprises a DecaWave DWM1000 module (containing a
+ * DecaWave ScenSor DW1000 IC), providing an IEEE 802.15.4 compliant
+ * Ultra-Wide Band (UWB) wireless transceiver.
+ *
+ * The DW1000 is connected via the SPI0 interface on the Pi, with the
+ * chip select connected to CE0 and an IRQ connected via GPIO 25.
+ *
+ * This device tree overlay is intended to be embedded within a Pi Hat
+ * ID EEPROM, allowing the board to be autodetected by sufficiently
+ * recent kernels.
+ *
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2708";
+
+	/* Enable SPI0 controller */
+	fragment@0 {
+		target = <&spi0>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	/* Disable generic SPI device for SPI0 CE0 */
+	fragment@1 {
+		target = <&spidev0>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	/* Define GPIO25 as input */
+	fragment@2 {
+		target = <&gpio>;
+		__overlay__ {
+			dw1000_pins {
+				brcm,pins = <25>;
+				brcm,function = <0>;
+			};
+		};
+	};
+
+	/* Define SPI0 CE0 as connected to a DW1000 device */
+	fragment@3 {
+		target = <&spi0>;
+		__overlay__ {
+			#address-cells = <0x1>;
+			#size-cells = <0x0>;
+			dw1000: dw1000@0 {
+				compatible = "decawave,dw1000";
+				reg = <0>;
+				interrupt-parent = <&gpio>;
+				interrupts = <25 4>;
+				spi-max-frequency = <1000000>;
+			};
+		};
+	};
+};
