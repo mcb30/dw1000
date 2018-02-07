@@ -4,3 +4,6 @@
 [submodule "rpi/circuit/lib/pihat"]
 	path = rpi/circuit/lib/pihat
 	url = https://github.com/xesscorp/RPi_Hat.pretty.git
+[submodule "rpi/eeprom/hats"]
+	path = rpi/eeprom/hats
+	url = https://github.com/raspberrypi/hats.git
