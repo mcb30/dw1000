@@ -169,7 +169,7 @@ static const struct regmap_bus dw1000_regmap_bus = {
 	.write = dw1000_regmap_write,
 	.read = dw1000_regmap_read,
 	.reg_format_endian_default = REGMAP_ENDIAN_NATIVE,
-	.val_format_endian_default = REGMAP_ENDIAN_NATIVE,
+	.val_format_endian_default = REGMAP_ENDIAN_LITTLE,
 };
 
 /* Register map configurations */
