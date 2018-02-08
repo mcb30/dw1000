@@ -315,6 +315,11 @@ static void dw1000_stop(struct ieee802154_hw *hw)
 	dev_info(&dw->spi->dev, "stopped\n");
 }
 
+static int dw1000_xmit_async(struct ieee802154_hw *hw, struct sk_buff *skb)
+{
+	return -ENOTSUPP;
+}
+
 static int dw1000_ed(struct ieee802154_hw *hw, u8 *level)
 {
 	struct dw1000 *dw = hw->priv;
@@ -332,9 +337,75 @@ static int dw1000_set_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
 	return 0;
 }
 
-static int dw1000_xmit_async(struct ieee802154_hw *hw, struct sk_buff *skb)
+static int dw1000_set_hw_addr_filt(struct ieee802154_hw *hw,
+				   struct ieee802154_hw_addr_filt *filt,
+				   unsigned long changed)
 {
-	return -ENOTSUPP;
+	struct dw1000 *dw = hw->priv;
+
+	dev_info(&dw->spi->dev, "setting address filter\n");
+	return 0;
+}
+
+static int dw1000_set_txpower(struct ieee802154_hw *hw, s32 mbm)
+{
+	struct dw1000 *dw = hw->priv;
+
+	dev_info(&dw->spi->dev, "setting TX power %d\n", mbm);
+	return 0;
+}
+
+static int dw1000_set_lbt(struct ieee802154_hw *hw, bool on)
+{
+	struct dw1000 *dw = hw->priv;
+
+	dev_info(&dw->spi->dev, "setting listen before transmit %s\n",
+		 (on ? "on" : "off"));
+	return 0;
+}
+
+static int dw1000_set_cca_mode(struct ieee802154_hw *hw,
+			       const struct wpan_phy_cca *cca)
+{
+	struct dw1000 *dw = hw->priv;
+
+	dev_info(&dw->spi->dev, "setting CCA mode\n");
+	return 0;
+}
+
+static int dw1000_set_cca_ed_level(struct ieee802154_hw *hw, s32 mbm)
+{
+	struct dw1000 *dw = hw->priv;
+
+	dev_info(&dw->spi->dev, "setting CCA ED level %d\n", mbm);
+	return 0;
+}
+
+static int dw1000_set_csma_params(struct ieee802154_hw *hw, u8 min_be, u8 max_be,
+				  u8 retries)
+{
+	struct dw1000 *dw = hw->priv;
+
+	dev_info(&dw->spi->dev, "setting CSMA BE %d-%d retries %d\n",
+		 min_be, max_be, retries);
+	return 0;
+}
+
+static int dw1000_set_frame_retries(struct ieee802154_hw *hw, s8 retries)
+{
+	struct dw1000 *dw = hw->priv;
+
+	dev_info(&dw->spi->dev, "setting frame retries %d\n", retries);
+	return 0;
+}
+
+static int dw1000_set_promiscuous_mode(struct ieee802154_hw *hw, bool on)
+{
+	struct dw1000 *dw = hw->priv;
+
+	dev_info(&dw->spi->dev, "setting promiscuous mode %s\n",
+		 (on ? "on" : "off"));
+	return 0;
 }
 
 static const struct ieee802154_ops dw1000_ops = {
@@ -344,6 +415,14 @@ static const struct ieee802154_ops dw1000_ops = {
 	.xmit_async = dw1000_xmit_async,
 	.ed = dw1000_ed,
 	.set_channel = dw1000_set_channel,
+	.set_hw_addr_filt = dw1000_set_hw_addr_filt,
+	.set_txpower = dw1000_set_txpower,
+	.set_lbt = dw1000_set_lbt,
+	.set_cca_mode = dw1000_set_cca_mode,
+	.set_cca_ed_level = dw1000_set_cca_ed_level,
+	.set_csma_params = dw1000_set_csma_params,
+	.set_frame_retries = dw1000_set_frame_retries,
+	.set_promiscuous_mode = dw1000_set_promiscuous_mode,
 };
 
 /********************************************************************************
