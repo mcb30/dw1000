@@ -224,7 +224,7 @@ DW1000_REGMAP(aon, DW1000_AON, DW1000_AON_LEN, uint8_t );
 DW1000_REGMAP(otp_if, DW1000_OTP_IF, DW1000_OTP_IF_LEN, uint16_t );
 DW1000_REGMAP(lde_ctrl, DW1000_LDE_CTRL, DW1000_LDE_CTRL_LEN, uint16_t );
 DW1000_REGMAP(dig_diag, DW1000_DIG_DIAG, DW1000_DIG_DIAG_LEN, uint16_t );
-DW1000_REGMAP(pmsc, DW1000_PMSC, DW1000_PMSC_LEN, uint16_t );
+DW1000_REGMAP(pmsc, DW1000_PMSC, DW1000_PMSC_LEN, uint32_t );
 
 static const struct dw1000_regmap_config *dw1000_configs[] = {
 	&dw1000_dev_id,
@@ -352,6 +352,62 @@ static const struct ieee802154_ops dw1000_ops = {
  *
  */
 
+/* Check device ID */
+static int dw1000_check_dev_id(struct dw1000 *dw, struct dw1000_dev_id *id)
+{
+	int rc;
+
+	/* Read device ID */
+	rc = dw1000_read(dw, DW1000_DEV_ID, 0, id, sizeof(*id));
+	if (rc) {
+		dev_err(&dw->spi->dev, "could not read device ID: %d\n", rc);
+		return rc;
+	}
+
+	/* Check register ID tag */
+	if (id->ridtag != cpu_to_le16(DW1000_RIDTAG_MAGIC)) {
+		dev_err(&dw->spi->dev, "incorrect RID tag %04X (expected %04X)\n",
+			le16_to_cpu(id->ridtag), DW1000_RIDTAG_MAGIC);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* Reset device */
+static int dw1000_reset(struct dw1000 *dw)
+{
+	struct dw1000_dev_id id;
+	int rc;
+
+	/* Force system clock to 19.2 MHz XTI clock */
+	rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				DW1000_PMSC_CTRL0_SYSCLKS_MASK,
+				DW1000_PMSC_CTRL0_SYSCLKS_SLOW);
+	if (rc)
+		return rc;
+
+	/* Initiate reset */
+	rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				DW1000_PMSC_CTRL0_SOFTRESET_MASK, 0);
+	if (rc)
+		return rc;
+
+	/* Clear reset */
+	rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				DW1000_PMSC_CTRL0_SOFTRESET_MASK,
+				DW1000_PMSC_CTRL0_SOFTRESET_MASK);
+	if (rc)
+		return rc;
+
+	/* Recheck device ID to ensure bus is still operational */
+	rc = dw1000_check_dev_id(dw, &id);
+	if (rc)
+		return rc;
+
+	return 0;
+}
+
 static int dw1000_probe(struct spi_device *spi)
 {
 	struct ieee802154_hw *hw;
@@ -369,25 +425,24 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->spi = spi;
 	hw->parent = &spi->dev;
 
-	/* Read device ID register */
-	rc = dw1000_read(dw, DW1000_DEV_ID, 0, &id, sizeof(id));
-	if (rc) {
-		dev_err(&spi->dev, "could not read device ID: %d\n", rc);
-		goto err_dev_id_read;
-	}
-	dev_info(&spi->dev, "found %04X model %02X version %02X\n",
-		 le16_to_cpu(id.ridtag), id.model, id.ver_rev);
-	if (id.ridtag != cpu_to_le16(DW1000_RIDTAG_MAGIC)) {
-		dev_err(&spi->dev, "incorrect RID tag %04X (expected %04X)\n",
-			le16_to_cpu(id.ridtag), DW1000_RIDTAG_MAGIC);
-		rc = -EINVAL;
-		goto err_dev_id_mismatch;
-	}
-
 	/* Initialise register map */
 	rc = dw1000_regmap_init(dw);
 	if (rc)
 		goto err_regmap_init;
+
+	/* Read device ID register */
+	rc = dw1000_check_dev_id(dw, &id);
+	if (rc)
+		goto err_dev_id;
+	dev_info(&spi->dev, "found %04X model %02X version %02X\n",
+		 le16_to_cpu(id.ridtag), id.model, id.ver_rev);
+
+	/* Reset device */
+	rc = dw1000_reset(dw);
+	if (rc) {
+		dev_err(&spi->dev, "reset failed: %d\n", rc);
+		goto err_reset;
+	}
 
 	/* Register IEEE 802.15.4 device */
 	rc = ieee802154_register_hw(hw);
@@ -401,8 +456,8 @@ static int dw1000_probe(struct spi_device *spi)
 
 	ieee802154_unregister_hw(hw);
  err_register_hw:
- err_dev_id_mismatch:
- err_dev_id_read:
+ err_reset:
+ err_dev_id:
  err_regmap_init:
 	ieee802154_free_hw(hw);
  err_alloc_hw:

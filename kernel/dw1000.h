@@ -134,8 +134,14 @@ struct dw1000_dev_id {
 	uint16_t ridtag;
 } __packed;
 
-/* Expedit register identification tag */
-#define DW1000_RIDTAG_MAGIC 0xdeca
+/* Expected register identification tag */
+#define DW1000_RIDTAG_MAGIC			0xdeca
+
+/* Power management and system control registers */
+#define DW1000_PMSC_CTRL0	0x00
+#define DW1000_PMSC_CTRL0_SYSCLKS_MASK		0x00000003UL
+#define DW1000_PMSC_CTRL0_SYSCLKS_SLOW		0x00000001UL
+#define DW1000_PMSC_CTRL0_SOFTRESET_MASK	0xf0000000UL
 
 /* Register map parameters */
 #define DW1000_REG_BITS 16
