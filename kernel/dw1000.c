@@ -380,6 +380,16 @@ static int dw1000_reset(struct dw1000 *dw)
 	struct dw1000_dev_id id;
 	int rc;
 
+	/* Force slow clock speed */
+	dw->spi->max_speed_hz = DW1000_SPI_SLOW_HZ;
+
+	/* Read device ID register */
+	rc = dw1000_check_dev_id(dw, &id);
+	if (rc)
+		return rc;
+	dev_info(&dw->spi->dev, "found %04X model %02X version %02X\n",
+		 le16_to_cpu(id.ridtag), id.model, id.ver_rev);
+
 	/* Force system clock to 19.2 MHz XTI clock */
 	rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
 				DW1000_PMSC_CTRL0_SYSCLKS_MASK,
@@ -405,6 +415,14 @@ static int dw1000_reset(struct dw1000 *dw)
 	if (rc)
 		return rc;
 
+	/* Switch to full clock speed */
+	dw->spi->max_speed_hz = DW1000_SPI_FAST_HZ;
+
+	/* Recheck device ID to ensure bus is still operational */
+	rc = dw1000_check_dev_id(dw, &id);
+	if (rc)
+		return rc;
+
 	return 0;
 }
 
@@ -412,7 +430,6 @@ static int dw1000_probe(struct spi_device *spi)
 {
 	struct ieee802154_hw *hw;
 	struct dw1000 *dw;
-	struct dw1000_dev_id id;
 	int rc;
 
 	/* Allocate IEEE 802.15.4 device */
@@ -429,13 +446,6 @@ static int dw1000_probe(struct spi_device *spi)
 	rc = dw1000_regmap_init(dw);
 	if (rc)
 		goto err_regmap_init;
-
-	/* Read device ID register */
-	rc = dw1000_check_dev_id(dw, &id);
-	if (rc)
-		goto err_dev_id;
-	dev_info(&spi->dev, "found %04X model %02X version %02X\n",
-		 le16_to_cpu(id.ridtag), id.model, id.ver_rev);
 
 	/* Reset device */
 	rc = dw1000_reset(dw);
@@ -457,7 +467,6 @@ static int dw1000_probe(struct spi_device *spi)
 	ieee802154_unregister_hw(hw);
  err_register_hw:
  err_reset:
- err_dev_id:
  err_regmap_init:
 	ieee802154_free_hw(hw);
  err_alloc_hw:

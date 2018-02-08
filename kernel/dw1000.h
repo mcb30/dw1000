@@ -26,6 +26,12 @@
 #include <linux/device.h>
 #include <linux/regmap.h>
 
+/* Maximum SPI bus speed when PLL is not yet locked */
+#define DW1000_SPI_SLOW_HZ 3000000
+
+/* Maximum SPI bus speed when PLL is locked */
+#define DW1000_SPI_FAST_HZ 20000000
+
 /* SPI bus header */
 struct dw1000_spi_header {
 	/* Register file and command */
