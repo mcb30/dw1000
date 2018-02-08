@@ -437,8 +437,7 @@ static int dw1000_check_dev_id(struct dw1000 *dw, struct dw1000_dev_id *id)
 	int rc;
 
 	/* Read device ID */
-	rc = dw1000_read(dw, DW1000_DEV_ID, 0, id, sizeof(*id));
-	if (rc) {
+	if ((rc = dw1000_read(dw, DW1000_DEV_ID, 0, id, sizeof(*id))) != 0) {
 		dev_err(&dw->spi->dev, "could not read device ID: %d\n", rc);
 		return rc;
 	}
@@ -463,43 +462,37 @@ static int dw1000_reset(struct dw1000 *dw)
 	dw->spi->max_speed_hz = DW1000_SPI_SLOW_HZ;
 
 	/* Read device ID register */
-	rc = dw1000_check_dev_id(dw, &id);
-	if (rc)
+	if ((rc = dw1000_check_dev_id(dw, &id)) != 0)
 		return rc;
 	dev_info(&dw->spi->dev, "found %04X model %02X version %02X\n",
 		 le16_to_cpu(id.ridtag), id.model, id.ver_rev);
 
 	/* Force system clock to 19.2 MHz XTI clock */
-	rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
-				DW1000_PMSC_CTRL0_SYSCLKS_MASK,
-				DW1000_PMSC_CTRL0_SYSCLKS_SLOW);
-	if (rc)
+	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				     DW1000_PMSC_CTRL0_SYSCLKS_MASK,
+				     DW1000_PMSC_CTRL0_SYSCLKS_SLOW)) != 0)
 		return rc;
 
 	/* Initiate reset */
-	rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
-				DW1000_PMSC_CTRL0_SOFTRESET_MASK, 0);
-	if (rc)
+	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				     DW1000_PMSC_CTRL0_SOFTRESET_MASK, 0)) != 0)
 		return rc;
 
 	/* Clear reset */
-	rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
-				DW1000_PMSC_CTRL0_SOFTRESET_MASK,
-				DW1000_PMSC_CTRL0_SOFTRESET_MASK);
-	if (rc)
+	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				     DW1000_PMSC_CTRL0_SOFTRESET_MASK,
+				     DW1000_PMSC_CTRL0_SOFTRESET_MASK)) != 0)
 		return rc;
 
 	/* Recheck device ID to ensure bus is still operational */
-	rc = dw1000_check_dev_id(dw, &id);
-	if (rc)
+	if ((rc = dw1000_check_dev_id(dw, &id)) != 0)
 		return rc;
 
 	/* Switch to full clock speed */
 	dw->spi->max_speed_hz = DW1000_SPI_FAST_HZ;
 
 	/* Recheck device ID to ensure bus is still operational */
-	rc = dw1000_check_dev_id(dw, &id);
-	if (rc)
+	if ((rc = dw1000_check_dev_id(dw, &id)) != 0)
 		return rc;
 
 	return 0;
@@ -522,20 +515,17 @@ static int dw1000_probe(struct spi_device *spi)
 	hw->parent = &spi->dev;
 
 	/* Initialise register map */
-	rc = dw1000_regmap_init(dw);
-	if (rc)
+	if ((rc = dw1000_regmap_init(dw)) != 0)
 		goto err_regmap_init;
 
 	/* Reset device */
-	rc = dw1000_reset(dw);
-	if (rc) {
+	if ((rc = dw1000_reset(dw)) != 0) {
 		dev_err(&spi->dev, "reset failed: %d\n", rc);
 		goto err_reset;
 	}
 
 	/* Register IEEE 802.15.4 device */
-	rc = ieee802154_register_hw(hw);
-	if (rc) {
+	if ((rc = ieee802154_register_hw(hw)) != 0) {
 		dev_err(&spi->dev, "could not register: %d\n", rc);
 		goto err_register_hw;
 	}
