@@ -342,8 +342,45 @@ static int dw1000_set_hw_addr_filt(struct ieee802154_hw *hw,
 				   unsigned long changed)
 {
 	struct dw1000 *dw = hw->priv;
+	int rc;
 
-	dev_info(&dw->spi->dev, "setting address filter\n");
+	/* Set PAN ID */
+	if (changed & IEEE802154_AFILT_PANID_CHANGED) {
+		if ((rc = regmap_write(dw->panadr.regs, DW1000_PANADR_PAN_ID,
+				       le16_to_cpu(filt->pan_id))) != 0)
+			return rc;
+		dev_dbg(dw->dev, "set PAN ID %04x\n", le16_to_cpu(filt->pan_id));
+	}
+
+	/* Set short address */
+	if (changed & IEEE802154_AFILT_SADDR_CHANGED) {
+		if ((rc = regmap_write(dw->panadr.regs, DW1000_PANADR_SHORT_ADDR,
+				       le16_to_cpu(filt->short_addr))) != 0)
+			return rc;
+		dev_dbg(dw->dev, "set short address %04x\n",
+			le16_to_cpu(filt->short_addr));
+	}
+
+	/* Set EUI-64 */
+	if (changed & IEEE802154_AFILT_IEEEADDR_CHANGED) {
+		if ((rc = regmap_raw_write(dw->eui.regs, 0, &filt->ieee_addr,
+					   sizeof(filt->ieee_addr))) != 0)
+			return rc;
+		dev_dbg(dw->dev, "set EUI64 %016llx\n",
+			le64_to_cpu(filt->ieee_addr));
+	}
+
+	/* Set coordinator status */
+	if (changed & IEEE802154_AFILT_PANC_CHANGED) {
+		if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0,
+					     DW1000_SYS_CFG_FFBC,
+					     (filt->pan_coord ?
+					      DW1000_SYS_CFG_FFBC : 0))) != 0)
+			return rc;
+		dev_dbg(dw->dev, "%sable PAN coordinator role\n",
+			(filt->pan_coord ? "en" : "dis"));
+	}
+
 	return 0;
 }
 
@@ -513,6 +550,11 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->spi = spi;
 	dw->dev = &spi->dev;
 	hw->parent = &spi->dev;
+	hw->flags = (IEEE802154_HW_TX_OMIT_CKSUM | IEEE802154_HW_LBT |
+		     IEEE802154_HW_CSMA_PARAMS | IEEE802154_HW_FRAME_RETRIES |
+		     IEEE802154_HW_AFILT | IEEE802154_HW_PROMISCUOUS |
+		     IEEE802154_HW_RX_OMIT_CKSUM |
+		     IEEE802154_HW_RX_DROP_BAD_CKSUM);
 
 	/* Initialise register map */
 	if ((rc = dw1000_regmap_init(dw)) != 0)

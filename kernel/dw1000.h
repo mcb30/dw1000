@@ -143,8 +143,15 @@ struct dw1000_dev_id {
 /* Expected register identification tag */
 #define DW1000_RIDTAG_MAGIC			0xdeca
 
+/* PAN address registers */
+#define DW1000_PANADR_SHORT_ADDR	0x00
+#define DW1000_PANADR_PAN_ID		0x02
+
+/* System configuration register */
+#define DW1000_SYS_CFG_FFBC			0x00000002UL
+
 /* Power management and system control registers */
-#define DW1000_PMSC_CTRL0	0x00
+#define DW1000_PMSC_CTRL0		0x00
 #define DW1000_PMSC_CTRL0_SYSCLKS_MASK		0x00000003UL
 #define DW1000_PMSC_CTRL0_SYSCLKS_SLOW		0x00000001UL
 #define DW1000_PMSC_CTRL0_SOFTRESET_MASK	0xf0000000UL
