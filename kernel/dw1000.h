@@ -33,7 +33,11 @@
 #define DW1000_CHANNELS (BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | BIT(7))
 
 /* Default channel */
-#define DW1000_DEFAULT_CHANNEL 5
+#define DW1000_CHANNEL_DEFAULT 5
+
+/* Pulse repetition frequencies */
+#define DW1000_PRF_SLOW_MHZ 16
+#define DW1000_PRF_FAST_MHZ 64
 
 /* Maximum SPI bus speed when PLL is not yet locked */
 #define DW1000_SPI_SLOW_HZ 3000000
@@ -167,6 +171,7 @@ struct dw1000_dev_id {
 #define DW1000_SYS_CFG_FFA4			0x00000080UL
 #define DW1000_SYS_CFG_FFA5			0x00000100UL
 #define DW1000_SYS_CFG_DIS_DRXB			0x00001000UL
+#define DW1000_SYS_CFG_DIS_STXP			0x00040000UL
 #define DW1000_SYS_CFG_RXAUTR			0x20000000UL
 
 /* Channel control register */
@@ -174,6 +179,10 @@ struct dw1000_dev_id {
 #define DW1000_CHAN_CTRL_TX_CHAN_MASK		DW1000_CHAN_CTRL_TX_CHAN(0xf)
 #define DW1000_CHAN_CTRL_RX_CHAN(n)		((n) << 4)
 #define DW1000_CHAN_CTRL_RX_CHAN_MASK		DW1000_CHAN_CTRL_RX_CHAN(0xf)
+#define DW1000_CHAN_CTRL_RXPRF(n)		((n) << 18)
+#define DW1000_CHAN_CTRL_RXPRF_SLOW		DW1000_CHAN_CTRL_RXPRF(0x1)
+#define DW1000_CHAN_CTRL_RXPRF_FAST		DW1000_CHAN_CTRL_RXPRF(0x2)
+#define DW1000_CHAN_CTRL_RXPRF_MASK		DW1000_CHAN_CTRL_RXPRF(0x3)
 
 /* Analog RF configuration registers */
 #define DW1000_RF_CONF_RF_RXCTRLH	0x0b
@@ -192,10 +201,15 @@ struct dw1000_dev_id {
 #define DW1000_PMSC_CTRL0_SYSCLKS_SLOW		0x00000001UL
 #define DW1000_PMSC_CTRL0_SOFTRESET_MASK	0xf0000000UL
 
+/* Pulse repetition frequencies */
+enum dw1000_prf {
+	DW1000_PRF_SLOW,
+	DW1000_PRF_FAST,
+	DW1000_PRF_COUNT
+};
+
 /* Channel configuration */
 struct dw1000_channel {
-	/* Channel number */
-	unsigned int chan;
 	/* Analog transmit control register values */
 	uint8_t rf_txctrl[3];
 	/* Analog receive control register values */
@@ -206,6 +220,8 @@ struct dw1000_channel {
 	uint8_t fs_pllcfg[4];
 	/* Frequency synthesiser PLL tuning */
 	uint8_t fs_plltune;
+	/* Transmit power control values */
+	uint8_t tx_power[DW1000_PRF_COUNT][4];
 };
 
 /* Register map parameters */
@@ -279,8 +295,27 @@ struct dw1000 {
 	struct dw1000_regmap lde_ctrl;
 	struct dw1000_regmap dig_diag;
 	struct dw1000_regmap pmsc;
-	/* Channel configuration */
-	const struct dw1000_channel *channel;
+	/* Channel number */
+	unsigned int channel;
+	/* Pulse repetition frequency */
+	enum dw1000_prf prf;
+	/* Smart power control enabled */
+	bool smart_power;
 };
+
+/**
+ * to_dw1000() - Get DW1000 device from generic device
+ *
+ * @dev:		Generic device
+ * @return:		DW1000 device
+ */
+static __always_inline struct dw1000 * to_dw1000(struct device *dev)
+{
+	struct spi_device *spi = to_spi_device(dev);
+	struct ieee802154_hw *hw = spi_get_drvdata(spi);
+	struct dw1000 *dw = hw->priv;
+
+	return dw;
+}
 
 #endif /* __DW1000_H */
