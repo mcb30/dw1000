@@ -178,6 +178,7 @@ struct dw1000_regmap {
 /* DW1000 device */
 struct dw1000 {
 	struct spi_device *spi;
+	struct device *dev;
 	struct dw1000_regmap dev_id;
 	struct dw1000_regmap eui;
 	struct dw1000_regmap panadr;

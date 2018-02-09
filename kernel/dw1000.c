@@ -281,11 +281,11 @@ static int dw1000_regmap_init(struct dw1000 *dw)
 		map = (void *)dw + config->offset;
 		map->dw = dw;
 		map->config = config;
-		map->regs = devm_regmap_init(&dw->spi->dev, &dw1000_regmap_bus,
-					     map, &config->config);
+		map->regs = devm_regmap_init(dw->dev, &dw1000_regmap_bus, map,
+					     &config->config);
 		if (IS_ERR(map->regs)) {
 			rc = PTR_ERR(map->regs);
-			dev_err(&dw->spi->dev, "could not allocate %s map: %d\n",
+			dev_err(dw->dev, "could not allocate %s map: %d\n",
 				config->config.name, rc);
 			return rc;
 		}
@@ -304,7 +304,7 @@ static int dw1000_start(struct ieee802154_hw *hw)
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(&dw->spi->dev, "started\n");
+	dev_info(dw->dev, "started\n");
 	return 0;
 }
 
@@ -312,7 +312,7 @@ static void dw1000_stop(struct ieee802154_hw *hw)
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(&dw->spi->dev, "stopped\n");
+	dev_info(dw->dev, "stopped\n");
 }
 
 static int dw1000_xmit_async(struct ieee802154_hw *hw, struct sk_buff *skb)
@@ -324,7 +324,7 @@ static int dw1000_ed(struct ieee802154_hw *hw, u8 *level)
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(&dw->spi->dev, "detecting energy\n");
+	dev_info(dw->dev, "detecting energy\n");
 	*level = 0;
 	return 0;
 }
@@ -333,7 +333,7 @@ static int dw1000_set_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(&dw->spi->dev, "setting channel %d:%d\n", page, channel);
+	dev_info(dw->dev, "setting channel %d:%d\n", page, channel);
 	return 0;
 }
 
@@ -351,7 +351,7 @@ static int dw1000_set_txpower(struct ieee802154_hw *hw, s32 mbm)
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(&dw->spi->dev, "setting TX power %d\n", mbm);
+	dev_info(dw->dev, "setting TX power %d\n", mbm);
 	return 0;
 }
 
@@ -359,7 +359,7 @@ static int dw1000_set_lbt(struct ieee802154_hw *hw, bool on)
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(&dw->spi->dev, "setting listen before transmit %s\n",
+	dev_info(dw->dev, "setting listen before transmit %s\n",
 		 (on ? "on" : "off"));
 	return 0;
 }
@@ -369,7 +369,7 @@ static int dw1000_set_cca_mode(struct ieee802154_hw *hw,
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(&dw->spi->dev, "setting CCA mode\n");
+	dev_info(dw->dev, "setting CCA mode\n");
 	return 0;
 }
 
@@ -377,7 +377,7 @@ static int dw1000_set_cca_ed_level(struct ieee802154_hw *hw, s32 mbm)
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(&dw->spi->dev, "setting CCA ED level %d\n", mbm);
+	dev_info(dw->dev, "setting CCA ED level %d\n", mbm);
 	return 0;
 }
 
@@ -386,7 +386,7 @@ static int dw1000_set_csma_params(struct ieee802154_hw *hw, u8 min_be, u8 max_be
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(&dw->spi->dev, "setting CSMA BE %d-%d retries %d\n",
+	dev_info(dw->dev, "setting CSMA BE %d-%d retries %d\n",
 		 min_be, max_be, retries);
 	return 0;
 }
@@ -395,7 +395,7 @@ static int dw1000_set_frame_retries(struct ieee802154_hw *hw, s8 retries)
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(&dw->spi->dev, "setting frame retries %d\n", retries);
+	dev_info(dw->dev, "setting frame retries %d\n", retries);
 	return 0;
 }
 
@@ -403,8 +403,7 @@ static int dw1000_set_promiscuous_mode(struct ieee802154_hw *hw, bool on)
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(&dw->spi->dev, "setting promiscuous mode %s\n",
-		 (on ? "on" : "off"));
+	dev_info(dw->dev, "setting promiscuous mode %s\n", (on ? "on" : "off"));
 	return 0;
 }
 
@@ -438,13 +437,13 @@ static int dw1000_check_dev_id(struct dw1000 *dw, struct dw1000_dev_id *id)
 
 	/* Read device ID */
 	if ((rc = dw1000_read(dw, DW1000_DEV_ID, 0, id, sizeof(*id))) != 0) {
-		dev_err(&dw->spi->dev, "could not read device ID: %d\n", rc);
+		dev_err(dw->dev, "could not read device ID: %d\n", rc);
 		return rc;
 	}
 
 	/* Check register ID tag */
 	if (id->ridtag != cpu_to_le16(DW1000_RIDTAG_MAGIC)) {
-		dev_err(&dw->spi->dev, "incorrect RID tag %04X (expected %04X)\n",
+		dev_err(dw->dev, "incorrect RID tag %04X (expected %04X)\n",
 			le16_to_cpu(id->ridtag), DW1000_RIDTAG_MAGIC);
 		return -EINVAL;
 	}
@@ -464,7 +463,7 @@ static int dw1000_reset(struct dw1000 *dw)
 	/* Read device ID register */
 	if ((rc = dw1000_check_dev_id(dw, &id)) != 0)
 		return rc;
-	dev_info(&dw->spi->dev, "found %04X model %02X version %02X\n",
+	dev_info(dw->dev, "found %04X model %02X version %02X\n",
 		 le16_to_cpu(id.ridtag), id.model, id.ver_rev);
 
 	/* Force system clock to 19.2 MHz XTI clock */
@@ -512,6 +511,7 @@ static int dw1000_probe(struct spi_device *spi)
 	}
 	dw = hw->priv;
 	dw->spi = spi;
+	dw->dev = &spi->dev;
 	hw->parent = &spi->dev;
 
 	/* Initialise register map */
@@ -520,13 +520,13 @@ static int dw1000_probe(struct spi_device *spi)
 
 	/* Reset device */
 	if ((rc = dw1000_reset(dw)) != 0) {
-		dev_err(&spi->dev, "reset failed: %d\n", rc);
+		dev_err(dw->dev, "reset failed: %d\n", rc);
 		goto err_reset;
 	}
 
 	/* Register IEEE 802.15.4 device */
 	if ((rc = ieee802154_register_hw(hw)) != 0) {
-		dev_err(&spi->dev, "could not register: %d\n", rc);
+		dev_err(dw->dev, "could not register: %d\n", rc);
 		goto err_register_hw;
 	}
 
