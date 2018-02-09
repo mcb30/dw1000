@@ -357,6 +357,12 @@ static int dw1000_regmap_init(struct dw1000 *dw)
  *
  */
 
+/**
+ * dw1000_start() - Start device operation
+ *
+ * @hw:			IEEE 802.15.4 device
+ * @return:		0 on success or -errno
+ */
 static int dw1000_start(struct ieee802154_hw *hw)
 {
 	struct dw1000 *dw = hw->priv;
@@ -365,6 +371,11 @@ static int dw1000_start(struct ieee802154_hw *hw)
 	return 0;
 }
 
+/**
+ * dw1000_stop() - Stop device operation
+ *
+ * @hw:			IEEE 802.15.4 device
+ */
 static void dw1000_stop(struct ieee802154_hw *hw)
 {
 	struct dw1000 *dw = hw->priv;
@@ -442,7 +453,7 @@ static int dw1000_set_hw_addr_filt(struct ieee802154_hw *hw,
 					     (filt->pan_coord ?
 					      DW1000_SYS_CFG_FFBC : 0))) != 0)
 			return rc;
-		dev_dbg(dw->dev, "%sable PAN coordinator role\n",
+		dev_dbg(dw->dev, "PAN coordinator role %sabled\n",
 			(filt->pan_coord ? "en" : "dis"));
 	}
 
@@ -501,11 +512,24 @@ static int dw1000_set_frame_retries(struct ieee802154_hw *hw, s8 retries)
 	return 0;
 }
 
+/**
+ * dw1000_set_promiscuous_mode() - Enable/disable promiscuous mode
+ *
+ * @hw:			IEEE 802.15.4 device
+ * @on:			Enable/disable promiscuous mode
+ * @return:		0 on success or -errno
+ */
 static int dw1000_set_promiscuous_mode(struct ieee802154_hw *hw, bool on)
 {
 	struct dw1000 *dw = hw->priv;
+	int rc;
 
-	dev_info(dw->dev, "setting promiscuous mode %s\n", (on ? "on" : "off"));
+	/* Enable/disable frame filtering */
+	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, DW1000_SYS_CFG_FFEN,
+				     (on ? 0 : DW1000_SYS_CFG_FFEN))) != 0)
+		return rc;
+	dev_dbg(dw->dev, "promiscuous mode %sabled\n", (on ? "en" : "dis"));
+
 	return 0;
 }
 
@@ -616,6 +640,42 @@ static int dw1000_reset(struct dw1000 *dw)
 }
 
 /**
+ * dw1000_init() - Apply initial configuration
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_init(struct dw1000 *dw)
+{
+	uint32_t sys_cfg_filters;
+	uint32_t sys_cfg_mask;
+	uint32_t sys_cfg_val;
+	int rc;
+
+	/* Set system configuration:
+	 *
+	 * - enable all frame types (when filtering is enabled)
+	 * - use double buffering
+	 * - use receiver auto-re-enabling
+	 *
+	 * Note that the overall use of filtering is controlled via
+	 * dw1000_set_promiscuous_mode().
+	 */
+	sys_cfg_filters = (DW1000_SYS_CFG_FFAB | DW1000_SYS_CFG_FFAD |
+			   DW1000_SYS_CFG_FFAA | DW1000_SYS_CFG_FFAM |
+			   DW1000_SYS_CFG_FFAR | DW1000_SYS_CFG_FFA4 |
+			   DW1000_SYS_CFG_FFA5);
+	sys_cfg_mask = (sys_cfg_filters | DW1000_SYS_CFG_DIS_DRXB |
+			DW1000_SYS_CFG_RXAUTR);
+	sys_cfg_val = (sys_cfg_filters | DW1000_SYS_CFG_RXAUTR);
+	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, sys_cfg_mask,
+				     sys_cfg_val)) != 0)
+		return rc;
+
+	return 0;
+}
+
+/**
  * dw1000_probe() - Create device
  *
  * @spi:		SPI device
@@ -653,6 +713,12 @@ static int dw1000_probe(struct spi_device *spi)
 		goto err_reset;
 	}
 
+	/* Initialise device */
+	if ((rc = dw1000_init(dw)) != 0) {
+		dev_err(dw->dev, "initialisation failed: %d\n", rc);
+		goto err_init;
+	}
+
 	/* Register IEEE 802.15.4 device */
 	if ((rc = ieee802154_register_hw(hw)) != 0) {
 		dev_err(dw->dev, "could not register: %d\n", rc);
@@ -664,6 +730,7 @@ static int dw1000_probe(struct spi_device *spi)
 
 	ieee802154_unregister_hw(hw);
  err_register_hw:
+ err_init:
  err_reset:
  err_regmap_init:
 	ieee802154_free_hw(hw);
