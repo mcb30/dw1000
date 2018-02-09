@@ -26,6 +26,15 @@
 #include <linux/device.h>
 #include <linux/regmap.h>
 
+/* Supported channel page (UWB only) */
+#define DW1000_CHANNEL_PAGE 4
+
+/* Supported channels */
+#define DW1000_CHANNELS (BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | BIT(7))
+
+/* Default channel */
+#define DW1000_DEFAULT_CHANNEL 5
+
 /* Maximum SPI bus speed when PLL is not yet locked */
 #define DW1000_SPI_SLOW_HZ 3000000
 
@@ -160,11 +169,44 @@ struct dw1000_dev_id {
 #define DW1000_SYS_CFG_DIS_DRXB			0x00001000UL
 #define DW1000_SYS_CFG_RXAUTR			0x20000000UL
 
+/* Channel control register */
+#define DW1000_CHAN_CTRL_TX_CHAN(n)		((n) << 0)
+#define DW1000_CHAN_CTRL_TX_CHAN_MASK		DW1000_CHAN_CTRL_TX_CHAN(0xf)
+#define DW1000_CHAN_CTRL_RX_CHAN(n)		((n) << 4)
+#define DW1000_CHAN_CTRL_RX_CHAN_MASK		DW1000_CHAN_CTRL_RX_CHAN(0xf)
+
+/* Analog RF configuration registers */
+#define DW1000_RF_CONF_RF_RXCTRLH	0x0b
+#define DW1000_RF_CONF_RF_TXCTRL	0x0c
+
+/* Transmitter calibration registers */
+#define DW1000_TX_CAL_TC_PGDELAY	0x0b
+
+/* Frequency synthesiser control registers */
+#define DW1000_FS_CTRL_FS_PLLCFG	0x07
+#define DW1000_FS_CTRL_FS_PLLTUNE	0x0b
+
 /* Power management and system control registers */
 #define DW1000_PMSC_CTRL0		0x00
 #define DW1000_PMSC_CTRL0_SYSCLKS_MASK		0x00000003UL
 #define DW1000_PMSC_CTRL0_SYSCLKS_SLOW		0x00000001UL
 #define DW1000_PMSC_CTRL0_SOFTRESET_MASK	0xf0000000UL
+
+/* Channel configuration */
+struct dw1000_channel {
+	/* Channel number */
+	unsigned int chan;
+	/* Analog transmit control register values */
+	uint8_t rf_txctrl[3];
+	/* Analog receive control register values */
+	uint8_t rf_rxctrlh;
+	/* Transmitter calibration pulse generator delay */
+	uint8_t tc_pgdelay;
+	/* Frequency synthesiser PLL configuration */
+	uint8_t fs_pllcfg[4];
+	/* Frequency synthesiser PLL tuning */
+	uint8_t fs_plltune;
+};
 
 /* Register map parameters */
 #define DW1000_REG_BITS 16
@@ -194,8 +236,11 @@ struct dw1000_regmap {
 
 /* DW1000 device */
 struct dw1000 {
+	/* SPI device */
 	struct spi_device *spi;
+	/* Generic device */
 	struct device *dev;
+	/* Register maps */
 	struct dw1000_regmap dev_id;
 	struct dw1000_regmap eui;
 	struct dw1000_regmap panadr;
@@ -234,6 +279,8 @@ struct dw1000 {
 	struct dw1000_regmap lde_ctrl;
 	struct dw1000_regmap dig_diag;
 	struct dw1000_regmap pmsc;
+	/* Channel configuration */
+	const struct dw1000_channel *channel;
 };
 
 #endif /* __DW1000_H */

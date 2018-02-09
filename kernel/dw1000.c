@@ -269,7 +269,7 @@ DW1000_REGMAP(ext_sync, DW1000_EXT_SYNC, DW1000_EXT_SYNC_LEN, uint32_t );
 DW1000_REGMAP(acc_mem, DW1000_ACC_MEM, DW1000_ACC_MEM_LEN, uint32_t );
 DW1000_REGMAP(gpio_ctrl, DW1000_GPIO_CTRL, DW1000_GPIO_CTRL_LEN, uint32_t );
 DW1000_REGMAP(drx_conf, DW1000_DRX_CONF, DW1000_DRX_CONF_LEN, uint16_t );
-DW1000_REGMAP(rf_conf, DW1000_RF_CONF, DW1000_RF_CONF_LEN, uint32_t );
+DW1000_REGMAP(rf_conf, DW1000_RF_CONF, DW1000_RF_CONF_LEN, uint8_t );
 DW1000_REGMAP(tx_cal, DW1000_TX_CAL, DW1000_TX_CAL_LEN, uint8_t );
 DW1000_REGMAP(fs_ctrl, DW1000_FS_CTRL, DW1000_FS_CTRL_LEN, uint8_t );
 DW1000_REGMAP(aon, DW1000_AON, DW1000_AON_LEN, uint8_t );
@@ -353,6 +353,85 @@ static int dw1000_regmap_init(struct dw1000 *dw)
 
 /********************************************************************************
  *
+ * Channel configuration
+ *
+ */
+
+/* Channel definitions
+ *
+ * Magic register values are taken directly from the datasheet.
+ */
+static const struct dw1000_channel dw1000_channels[] = {
+	{
+		.chan = 1,
+		.rf_txctrl = { 0x40, 0x5c, 0x00 },
+		.rf_rxctrlh = 0xd8,
+		.tc_pgdelay = 0xc9,
+		.fs_pllcfg = { 0x07, 0x04, 0x00, 0x09 },
+		.fs_plltune = 0x1e,
+	},
+	{
+		.chan = 2,
+		.rf_txctrl = { 0xa0, 0x5c, 0x04 },
+		.rf_rxctrlh = 0xd8,
+		.tc_pgdelay = 0xc2,
+		.fs_pllcfg = { 0x08, 0x05, 0x40, 0x08 },
+		.fs_plltune = 0x26,
+	},
+	{
+		.chan = 3,
+		.rf_txctrl = { 0xc0, 0x6c, 0x08 },
+		.rf_rxctrlh = 0xd8,
+		.tc_pgdelay = 0xc5,
+		.fs_pllcfg = { 0x09, 0x10, 0x40, 0x08 },
+		.fs_plltune = 0x56,
+	},
+	{
+		.chan = 4,
+		.rf_txctrl = { 0x80, 0x5c, 0x04 },
+		.rf_rxctrlh = 0xbc,
+		.tc_pgdelay = 0x95,
+		.fs_pllcfg = { 0x08, 0x05, 0x40, 0x08 },
+		.fs_plltune = 0x26,
+	},
+	{
+		.chan = 5,
+		.rf_txctrl = { 0xe0, 0x3f, 0x1e },
+		.rf_rxctrlh = 0xd8,
+		.tc_pgdelay = 0xc0,
+		.fs_pllcfg = { 0x1d, 0x04, 0x00, 0x08 },
+		.fs_plltune = 0xbe,
+	},
+	{
+		.chan = 7,
+		.rf_txctrl = { 0xe0, 0x7d, 0x1e },
+		.rf_rxctrlh = 0xbc,
+		.tc_pgdelay = 0x93,
+		.fs_pllcfg = { 0x1d, 0x04, 0x00, 0x08 },
+		.fs_plltune = 0xbe,
+	},
+};
+
+/**
+ * dw1000_channel() - Identify channel configuration
+ *
+ * @chan:		Channel number
+ * @return:		Channel configuration, or NULL if not found
+ */
+static const struct dw1000_channel * dw1000_channel(unsigned int chan)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(dw1000_channels); i++) {
+		if (dw1000_channels[i].chan == chan)
+			return &dw1000_channels[i];
+	}
+
+	return NULL;
+}
+
+/********************************************************************************
+ *
  * IEEE 802.15.4 interface
  *
  */
@@ -397,11 +476,58 @@ static int dw1000_ed(struct ieee802154_hw *hw, u8 *level)
 	return 0;
 }
 
-static int dw1000_set_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
+/**
+ * dw1000_set_channel() - Set radio channel
+ *
+ * @hw:			IEEE 802.15.4 device
+ * @page:		Channel page (must be UWB)
+ * @chan:		Channel number
+ * @return:		0 on success or -errno
+ */
+static int dw1000_set_channel(struct ieee802154_hw *hw, u8 page, u8 chan)
 {
 	struct dw1000 *dw = hw->priv;
+	const struct dw1000_channel *channel;
+	int rc;
 
-	dev_info(dw->dev, "setting channel %d:%d\n", page, channel);
+	/* Sanity check */
+	if (page != DW1000_CHANNEL_PAGE)
+		return -ENOTSUPP;
+
+	/* Identify channel configuration */
+	channel = dw1000_channel(chan);
+	if (!channel)
+		return -ENOTSUPP;
+	dw->channel = channel;
+
+	/* Set magic register values */
+	if ((rc = regmap_raw_write(dw->rf_conf.regs, DW1000_RF_CONF_RF_TXCTRL,
+				   channel->rf_txctrl,
+				   sizeof(channel->rf_txctrl))) != 0)
+		return rc;
+	if ((rc = regmap_write(dw->rf_conf.regs, DW1000_RF_CONF_RF_RXCTRLH,
+			       channel->rf_rxctrlh)) != 0)
+		return rc;
+	if ((rc = regmap_write(dw->tx_cal.regs, DW1000_TX_CAL_TC_PGDELAY,
+			       channel->tc_pgdelay)) != 0)
+		return rc;
+	if ((rc = regmap_raw_write(dw->fs_ctrl.regs, DW1000_FS_CTRL_FS_PLLCFG,
+				   channel->fs_pllcfg,
+				   sizeof(channel->fs_pllcfg))) != 0)
+		return rc;
+	if ((rc = regmap_write(dw->fs_ctrl.regs, DW1000_FS_CTRL_FS_PLLTUNE,
+			       channel->fs_plltune)) != 0)
+		return rc;
+
+	/* Set channel numbers */
+	if ((rc = regmap_update_bits(dw->chan_ctrl.regs, 0,
+				     (DW1000_CHAN_CTRL_TX_CHAN_MASK |
+				      DW1000_CHAN_CTRL_RX_CHAN_MASK),
+				     (DW1000_CHAN_CTRL_TX_CHAN(chan) |
+				      DW1000_CHAN_CTRL_RX_CHAN(chan)))) != 0)
+		return rc;
+
+	dev_dbg(dw->dev, "set channel %d\n", chan);
 	return 0;
 }
 
@@ -697,11 +823,16 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->spi = spi;
 	dw->dev = &spi->dev;
 	hw->parent = &spi->dev;
+
+	/* Report capabilities */
 	hw->flags = (IEEE802154_HW_TX_OMIT_CKSUM | IEEE802154_HW_LBT |
 		     IEEE802154_HW_CSMA_PARAMS | IEEE802154_HW_FRAME_RETRIES |
 		     IEEE802154_HW_AFILT | IEEE802154_HW_PROMISCUOUS |
 		     IEEE802154_HW_RX_OMIT_CKSUM |
 		     IEEE802154_HW_RX_DROP_BAD_CKSUM);
+	hw->phy->supported.channels[DW1000_CHANNEL_PAGE] = DW1000_CHANNELS;
+	hw->phy->current_page = DW1000_CHANNEL_PAGE;
+	hw->phy->current_channel = DW1000_DEFAULT_CHANNEL;
 
 	/* Initialise register map */
 	if ((rc = dw1000_regmap_init(dw)) != 0)
@@ -719,6 +850,11 @@ static int dw1000_probe(struct spi_device *spi)
 		goto err_init;
 	}
 
+	/* Configure for default channel */
+	if ((rc = dw1000_set_channel(hw, hw->phy->current_page,
+				     hw->phy->current_channel)) != 0)
+		goto err_set_channel;
+
 	/* Register IEEE 802.15.4 device */
 	if ((rc = ieee802154_register_hw(hw)) != 0) {
 		dev_err(dw->dev, "could not register: %d\n", rc);
@@ -730,6 +866,7 @@ static int dw1000_probe(struct spi_device *spi)
 
 	ieee802154_unregister_hw(hw);
  err_register_hw:
+ err_set_channel:
  err_init:
  err_reset:
  err_regmap_init:
