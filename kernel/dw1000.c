@@ -40,7 +40,14 @@ struct dw1000_message {
 	struct dw1000_spi_header header;
 };
 
-/* Construct register address */
+/**
+ * dw1000_message_init() - Initialise SPI message
+ *
+ * @msg:		SPI message to initialise
+ * @file:		Register file
+ * @offset:		Offset within register file
+ * @return:		SPI transfer to use for message payload
+ */
 static struct spi_transfer * dw1000_message_init(struct dw1000_message *msg,
 						 unsigned int file,
 						 unsigned int offset)
@@ -69,7 +76,16 @@ static struct spi_transfer * dw1000_message_init(struct dw1000_message *msg,
 	return xfer;
 }
 
-/* Read register(s) */
+/**
+ * dw1000_read() - Read register(s)
+ *
+ * @dw:			DW1000 device
+ * @file:		Register file
+ * @offset:		Offset within register file
+ * @data:		Raw register value
+ * @len:		Length of register value
+ * @return:		0 on success or -errno
+ */
 static int dw1000_read(struct dw1000 *dw, unsigned int file, unsigned int offset,
 		       void *data, size_t len)
 {
@@ -86,7 +102,16 @@ static int dw1000_read(struct dw1000 *dw, unsigned int file, unsigned int offset
 	return spi_sync(dw->spi, &msg.msg);
 }
 
-/* Write register(s) */
+/**
+ * dw1000_write() - Write register(s)
+ *
+ * @dw:			DW1000 device
+ * @file:		Register file
+ * @offset:		Offset within register file
+ * @data:		Raw register value
+ * @len:		Length of register value
+ * @return:		0 on success or -errno
+ */
 static int dw1000_write(struct dw1000 *dw, unsigned int file, unsigned int offset,
 			const void *data, size_t len)
 {
@@ -104,7 +129,18 @@ static int dw1000_write(struct dw1000 *dw, unsigned int file, unsigned int offse
 	return spi_sync(dw->spi, &msg.msg);
 }
 
-/* Write register(s) asynchronously */
+/**
+ * dw1000_write_async() - Write register(s) asynchronously
+ *
+ * @dw:			DW1000 device
+ * @file:		Register file
+ * @offset:		Offset within register file
+ * @data:		Raw register value
+ * @len:		Length of register value
+ * @msg:		SPI message for asynchronous transfer
+ * @complete:		Completion callback
+ * @return:		0 on success or -errno
+ */
 static int dw1000_write_async(struct dw1000 *dw, unsigned int file,
 			      unsigned int offset, const void *data, size_t len,
 			      struct dw1000_message *msg,
@@ -133,7 +169,14 @@ static int dw1000_write_async(struct dw1000 *dw, unsigned int file,
  *
  */
 
-/* Write register(s) */
+/**
+ * dw1000_regmap_write() - Write register(s)
+ *
+ * @context:		DW1000 register map
+ * @data:		Buffer containing register offset and raw register value
+ * @len:		Length of buffer
+ * @return:		0 on success or -errno
+ */
 static int dw1000_regmap_write(void *context, const void *data, size_t len)
 {
 	struct dw1000_regmap *map = context;
@@ -149,7 +192,16 @@ static int dw1000_regmap_write(void *context, const void *data, size_t len)
 	return dw1000_write(map->dw, map->config->file, *offset, data, len);
 }
 
-/* Read register(s) */
+/**
+ * dw1000_regmap_read() - Read register(s)
+ *
+ * @context:		DW1000 register map
+ * @reg:		Buffer containing register offset
+ * @reg_len:		Length of register offset
+ * @val:		Buffer to contain raw register value
+ * @val_len:		Length of raw register value
+ * @return:		0 on success or -errno
+ */
 static int dw1000_regmap_read(void *context, const void *reg, size_t reg_len,
 			      void *val, size_t val_len)
 {
@@ -267,7 +319,12 @@ static const struct dw1000_regmap_config *dw1000_configs[] = {
 	&dw1000_pmsc,
 };
 
-/* Initialise register maps */
+/**
+ * dw1000_regmap_init() - Initialise register maps
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
 static int dw1000_regmap_init(struct dw1000 *dw)
 {
 	const struct dw1000_regmap_config *config;
@@ -337,6 +394,14 @@ static int dw1000_set_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
 	return 0;
 }
 
+/**
+ * dw1000_set_hw_addr_filt() - Set hardware address filters
+ *
+ * @hw:			IEEE 802.15.4 device
+ * @filt:		Hardware address filters
+ * @changed:		Change bitmask
+ * @return:		0 on success or -errno
+ */
 static int dw1000_set_hw_addr_filt(struct ieee802154_hw *hw,
 				   struct ieee802154_hw_addr_filt *filt,
 				   unsigned long changed)
@@ -444,6 +509,7 @@ static int dw1000_set_promiscuous_mode(struct ieee802154_hw *hw, bool on)
 	return 0;
 }
 
+/* IEEE 802.15.4 operations */
 static const struct ieee802154_ops dw1000_ops = {
 	.owner = THIS_MODULE,
 	.start = dw1000_start,
@@ -467,7 +533,17 @@ static const struct ieee802154_ops dw1000_ops = {
  *
  */
 
-/* Check device ID */
+/**
+ * dw1000_check_dev_id() - Check device ID
+ *
+ * The register ID tag portion of the device ID has a fixed value.
+ * This can be used to verify that the SPI bus is operational and that
+ * the DW1000 device is present and responding to commands.
+ *
+ * @dw:			DW1000 device
+ * @id:			Device ID to fill in
+ * @return:		0 on success or -errno
+ */
 static int dw1000_check_dev_id(struct dw1000 *dw, struct dw1000_dev_id *id)
 {
 	int rc;
@@ -488,7 +564,12 @@ static int dw1000_check_dev_id(struct dw1000 *dw, struct dw1000_dev_id *id)
 	return 0;
 }
 
-/* Reset device */
+/**
+ * dw1000_reset() - Reset device
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
 static int dw1000_reset(struct dw1000 *dw)
 {
 	struct dw1000_dev_id id;
@@ -534,6 +615,12 @@ static int dw1000_reset(struct dw1000 *dw)
 	return 0;
 }
 
+/**
+ * dw1000_probe() - Create device
+ *
+ * @spi:		SPI device
+ * @return:		0 on success or -errno
+ */
 static int dw1000_probe(struct spi_device *spi)
 {
 	struct ieee802154_hw *hw;
@@ -584,6 +671,12 @@ static int dw1000_probe(struct spi_device *spi)
 	return rc;
 }
 
+/**
+ * dw1000_remove() - Remove device
+ *
+ * @spi:		SPI device
+ * @return:		0 on success or -errno
+ */
 static int dw1000_remove(struct spi_device *spi)
 {
 	struct ieee802154_hw *hw = spi_get_drvdata(spi);
