@@ -359,6 +359,12 @@ static int dw1000_regmap_init(struct dw1000 *dw)
  *
  */
 
+/* Pulse repetition frequencies */
+static const unsigned int dw1000_prf[DW1000_PRF_COUNT] = {
+	[DW1000_PRF_SLOW] = DW1000_PRF_SLOW_MHZ,
+	[DW1000_PRF_FAST] = DW1000_PRF_FAST_MHZ,
+};
+
 /* Channel definitions
  *
  * Magic register values are taken directly from the datasheet.
@@ -374,6 +380,11 @@ static const struct dw1000_channel dw1000_channels[] = {
 			[DW1000_PRF_SLOW] = { 0x75, 0x55, 0x35, 0x15 },
 			[DW1000_PRF_FAST] = { 0x67, 0x47, 0x27, 0x07 },
 		},
+		.preambles = {
+			[DW1000_PRF_SLOW] = (BIT(1) | BIT(2)),
+			[DW1000_PRF_FAST] = (BIT(9) | BIT(10) | BIT(11) |
+					     BIT(12)),
+		},
 	},
 	[2] = {
 		.rf_txctrl = { 0xa0, 0x5c, 0x04 },
@@ -384,6 +395,11 @@ static const struct dw1000_channel dw1000_channels[] = {
 		.tx_power = {
 			[DW1000_PRF_SLOW] = { 0x75, 0x55, 0x35, 0x15 },
 			[DW1000_PRF_FAST] = { 0x67, 0x47, 0x27, 0x07 },
+		},
+		.preambles = {
+			[DW1000_PRF_SLOW] = (BIT(3) | BIT(4)),
+			[DW1000_PRF_FAST] = (BIT(9) | BIT(10) | BIT(11) |
+					     BIT(12)),
 		},
 	},
 	[3] = {
@@ -396,6 +412,11 @@ static const struct dw1000_channel dw1000_channels[] = {
 			[DW1000_PRF_SLOW] = { 0x6f, 0x4f, 0x2f, 0x0f },
 			[DW1000_PRF_FAST] = { 0x8b, 0x6b, 0x4b, 0x2b },
 		},
+		.preambles = {
+			[DW1000_PRF_SLOW] = (BIT(5) | BIT(6)),
+			[DW1000_PRF_FAST] = (BIT(9) | BIT(10) | BIT(11) |
+					     BIT(12)),
+		},
 	},
 	[4] = {
 		.rf_txctrl = { 0x80, 0x5c, 0x04 },
@@ -406,6 +427,11 @@ static const struct dw1000_channel dw1000_channels[] = {
 		.tx_power = {
 			[DW1000_PRF_SLOW] = { 0x5f, 0x3f, 0x1f, 0x1f },
 			[DW1000_PRF_FAST] = { 0x9a, 0x7a, 0x5a, 0x3a },
+		},
+		.preambles = {
+			[DW1000_PRF_SLOW] = (BIT(7) | BIT(8)),
+			[DW1000_PRF_FAST] = (BIT(17) | BIT(18) | BIT(19) |
+					     BIT(20)),
 		},
 	},
 	[5] = {
@@ -418,6 +444,11 @@ static const struct dw1000_channel dw1000_channels[] = {
 			[DW1000_PRF_SLOW] = { 0x48, 0x28, 0x08, 0x0e },
 			[DW1000_PRF_FAST] = { 0x85, 0x65, 0x45, 0x25 },
 		},
+		.preambles = {
+			[DW1000_PRF_SLOW] = (BIT(5) | BIT(6)),
+			[DW1000_PRF_FAST] = (BIT(9) | BIT(10) | BIT(11) |
+					     BIT(12)),
+		},
 	},
 	[7] = {
 		.rf_txctrl = { 0xe0, 0x7d, 0x1e },
@@ -429,8 +460,32 @@ static const struct dw1000_channel dw1000_channels[] = {
 			[DW1000_PRF_SLOW] = { 0x92, 0x72, 0x52, 0x32 },
 			[DW1000_PRF_FAST] = { 0xd1, 0xb1, 0x71, 0x51 },
 		},
+		.preambles = {
+			[DW1000_PRF_SLOW] = (BIT(7) | BIT(8)),
+			[DW1000_PRF_FAST] = (BIT(17) | BIT(18) | BIT(19) |
+					     BIT(20)),
+		},
 	},
 };
+
+/**
+ * dw1000_preamble() - Calculate preamble code
+ *
+ * @dw:			DW1000 device
+ * @return:		Preamble code
+ */
+static unsigned int dw1000_preamble(struct dw1000 *dw)
+{
+	unsigned long supported;
+
+	/* Use explicitly set preamble code if configured and supported */
+	supported = dw1000_channels[dw->channel].preambles[dw->prf];
+	if (BIT(dw->preamble) & supported)
+		return dw->preamble;
+
+	/* Otherwise, use first supported preamble code */
+	return (ffs(supported) - 1);
+}
 
 /**
  * dw1000_configure_power() - Configure transmit power
@@ -462,6 +517,31 @@ static int dw1000_configure_power(struct dw1000 *dw)
 	sys_cfg = (dw->smart_power ? 0 : DW1000_SYS_CFG_DIS_STXP);
 	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0,
 				     DW1000_SYS_CFG_DIS_STXP, sys_cfg)) != 0)
+		return rc;
+
+	return 0;
+}
+
+/**
+ * dw1000_configure_preamble() - Configure preamble code
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_configure_preamble(struct dw1000 *dw)
+{
+	unsigned int preamble;
+	uint32_t chan_ctrl;
+	int rc;
+
+	/* Set preamble code */
+	preamble = dw1000_preamble(dw);
+	chan_ctrl = (DW1000_CHAN_CTRL_TX_PCODE(preamble) |
+		     DW1000_CHAN_CTRL_RX_PCODE(preamble));
+	if ((rc = regmap_update_bits(dw->chan_ctrl.regs, 0,
+				     (DW1000_CHAN_CTRL_TX_PCODE_MASK |
+				      DW1000_CHAN_CTRL_RX_PCODE_MASK),
+				     chan_ctrl)) != 0)
 		return rc;
 
 	return 0;
@@ -550,6 +630,10 @@ static int dw1000_configure(struct dw1000 *dw)
 	if ((rc = dw1000_configure_prf(dw)) != 0)
 		return rc;
 
+	/* Configure preamble */
+	if ((rc = dw1000_configure_preamble(dw)) != 0)
+		return rc;
+
 	/* Configure transmit power */
 	if ((rc = dw1000_configure_power(dw)) != 0)
 		return rc;
@@ -575,6 +659,39 @@ static int dw1000_change_smart_power(struct dw1000 *dw, bool smart_power)
 	if ((rc = dw1000_configure_power(dw)) != 0)
 		return rc;
 
+	dev_dbg(dw->dev, "smart power control %sabled\n",
+		(smart_power ? "en" : "dis"));
+	return 0;
+}
+
+/**
+ * dw1000_change_preamble() - Change preamble code
+ *
+ * @dw:			DW1000 device
+ * @preamble:		Preamble code (or 0 for automatic selection)
+ * @return:		0 on success or -errno
+ */
+static int dw1000_change_preamble(struct dw1000 *dw, unsigned int preamble)
+{
+	unsigned long supported;
+	int rc;
+
+	/* Check that preamble code is valid */
+	if (preamble) {
+		supported = dw1000_channels[dw->channel].preambles[dw->prf];
+		if (!(BIT(preamble) & supported))
+			return -EINVAL;
+	}
+
+	/* Record preamble code */
+	dw->preamble = preamble;
+
+	/* Reconfigure preamble code */
+	if ((rc = dw1000_configure_preamble(dw)) != 0)
+		return rc;
+
+	dev_dbg(dw->dev, "set preamble code %d (requested %d)\n",
+		dw1000_preamble(dw), preamble);
 	return 0;
 }
 
@@ -596,10 +713,16 @@ static int dw1000_change_prf(struct dw1000 *dw, enum dw1000_prf prf)
 	if ((rc = dw1000_configure_prf(dw)) != 0)
 		return rc;
 
+	/* Reconfigure preamble code */
+	if ((rc = dw1000_configure_preamble(dw)) != 0)
+		return rc;
+
 	/* Reconfigure transmit power */
 	if ((rc = dw1000_configure_power(dw)) != 0)
 		return rc;
 
+	dev_dbg(dw->dev, "set pulse repetition frequency %dMHz\n",
+		dw1000_prf[dw->prf]);
 	return 0;
 }
 
@@ -614,6 +737,10 @@ static int dw1000_change_channel(struct dw1000 *dw, unsigned int channel)
 {
 	int rc;
 
+	/* Check that channel is supported */
+	if (!(BIT(channel) & DW1000_CHANNELS))
+		return -EINVAL;
+
 	/* Record channel */
 	dw->channel = channel;
 
@@ -621,10 +748,15 @@ static int dw1000_change_channel(struct dw1000 *dw, unsigned int channel)
 	if ((rc = dw1000_configure_channel(dw)) != 0)
 		return rc;
 
+	/* Reconfigure preamble code */
+	if ((rc = dw1000_configure_preamble(dw)) != 0)
+		return rc;
+
 	/* Reconfigure transmit power */
 	if ((rc = dw1000_configure_power(dw)) != 0)
 		return rc;
 
+	dev_dbg(dw->dev, "set channel %d\n", channel);
 	return 0;
 }
 
@@ -689,15 +821,12 @@ static int dw1000_set_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
 
 	/* Sanity checks */
 	if (page != DW1000_CHANNEL_PAGE)
-		return -ENOTSUPP;
-	if (!(BIT(channel) & DW1000_CHANNELS))
-		return -ENOTSUPP;
+		return -EINVAL;
 
 	/* Change radio channel */
 	if ((rc = dw1000_change_channel(dw, channel)) != 0)
 		return rc;
 
-	dev_dbg(dw->dev, "set channel %d\n", channel);
 	return 0;
 }
 
@@ -877,16 +1006,11 @@ static DW1000_ATTR_RW(smart_power, 0644);
 
 /* Pulse repetition frequency */
 static ssize_t dw1000_show_prf(struct device *dev,
-			       struct device_attribute *attr,
-			       char *buf)
+			       struct device_attribute *attr, char *buf)
 {
-	static const unsigned int prf[DW1000_PRF_COUNT] = {
-		[DW1000_PRF_SLOW] = DW1000_PRF_SLOW_MHZ,
-		[DW1000_PRF_FAST] = DW1000_PRF_FAST_MHZ,
-	};
 	struct dw1000 *dw = to_dw1000(dev);
 
-	return sprintf(buf, "%d\n", prf[dw->prf]);
+	return sprintf(buf, "%d\n", dw1000_prf[dw->prf]);
 }
 static ssize_t dw1000_store_prf(struct device *dev,
 				struct device_attribute *attr,
@@ -915,10 +1039,35 @@ static ssize_t dw1000_store_prf(struct device *dev,
 }
 static DW1000_ATTR_RW(prf, 0644);
 
+/* Preamble code */
+static ssize_t dw1000_show_preamble(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "%d\n", dw1000_preamble(dw));
+}
+static ssize_t dw1000_store_preamble(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	int preamble;
+	int rc;
+
+	if ((rc = kstrtoint(buf, 0, &preamble)) != 0)
+		return rc;
+	if ((rc = dw1000_change_preamble(dw, preamble)) != 0)
+		return rc;
+	return count;
+}
+static DW1000_ATTR_RW(preamble, 0644);
+
 /* Attribute list */
 static struct attribute *dw1000_attrs[] = {
 	&dev_attr_smart_power.attr,
 	&dev_attr_prf.attr,
+	&dev_attr_preamble.attr,
 	NULL
 };
 
@@ -1073,8 +1222,9 @@ static int dw1000_probe(struct spi_device *spi)
 	dw = hw->priv;
 	dw->spi = spi;
 	dw->dev = &spi->dev;
-	dw->smart_power = dw1000_default_smart_power;
+	dw->channel = DW1000_CHANNEL_DEFAULT;
 	dw->prf = DW1000_PRF_FAST;
+	dw->smart_power = dw1000_default_smart_power;
 	hw->parent = &spi->dev;
 
 	/* Report capabilities */

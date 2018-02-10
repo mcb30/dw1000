@@ -183,6 +183,10 @@ struct dw1000_dev_id {
 #define DW1000_CHAN_CTRL_RXPRF_SLOW		DW1000_CHAN_CTRL_RXPRF(0x1)
 #define DW1000_CHAN_CTRL_RXPRF_FAST		DW1000_CHAN_CTRL_RXPRF(0x2)
 #define DW1000_CHAN_CTRL_RXPRF_MASK		DW1000_CHAN_CTRL_RXPRF(0x3)
+#define DW1000_CHAN_CTRL_TX_PCODE(n)		((n) << 22)
+#define DW1000_CHAN_CTRL_TX_PCODE_MASK		DW1000_CHAN_CTRL_TX_PCODE(0x1f)
+#define DW1000_CHAN_CTRL_RX_PCODE(n)		((n) << 27)
+#define DW1000_CHAN_CTRL_RX_PCODE_MASK		DW1000_CHAN_CTRL_RX_PCODE(0x1f)
 
 /* Analog RF configuration registers */
 #define DW1000_RF_CONF_RF_RXCTRLH	0x0b
@@ -222,6 +226,8 @@ struct dw1000_channel {
 	uint8_t fs_plltune;
 	/* Transmit power control values */
 	uint8_t tx_power[DW1000_PRF_COUNT][4];
+	/* Supported preambles */
+	unsigned long preambles[DW1000_PRF_COUNT];
 };
 
 /* Register map parameters */
@@ -297,6 +303,8 @@ struct dw1000 {
 	struct dw1000_regmap pmsc;
 	/* Channel number */
 	unsigned int channel;
+	/* Preamble code */
+	unsigned int preamble;
 	/* Pulse repetition frequency */
 	enum dw1000_prf prf;
 	/* Smart power control enabled */
