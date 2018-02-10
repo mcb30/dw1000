@@ -889,15 +889,6 @@ static int dw1000_set_hw_addr_filt(struct ieee802154_hw *hw,
 	return 0;
 }
 
-static int dw1000_set_lbt(struct ieee802154_hw *hw, bool on)
-{
-	struct dw1000 *dw = hw->priv;
-
-	dev_info(dw->dev, "setting listen before transmit %s\n",
-		 (on ? "on" : "off"));
-	return 0;
-}
-
 static int dw1000_set_cca_mode(struct ieee802154_hw *hw,
 			       const struct wpan_phy_cca *cca)
 {
@@ -912,16 +903,6 @@ static int dw1000_set_cca_ed_level(struct ieee802154_hw *hw, s32 mbm)
 	struct dw1000 *dw = hw->priv;
 
 	dev_info(dw->dev, "setting CCA ED level %d\n", mbm);
-	return 0;
-}
-
-static int dw1000_set_csma_params(struct ieee802154_hw *hw, u8 min_be,
-				  u8 max_be, u8 retries)
-{
-	struct dw1000 *dw = hw->priv;
-
-	dev_info(dw->dev, "setting CSMA BE %d-%d retries %d\n",
-		 min_be, max_be, retries);
 	return 0;
 }
 
@@ -963,10 +944,8 @@ static const struct ieee802154_ops dw1000_ops = {
 	.ed = dw1000_ed,
 	.set_channel = dw1000_set_channel,
 	.set_hw_addr_filt = dw1000_set_hw_addr_filt,
-	.set_lbt = dw1000_set_lbt,
 	.set_cca_mode = dw1000_set_cca_mode,
 	.set_cca_ed_level = dw1000_set_cca_ed_level,
-	.set_csma_params = dw1000_set_csma_params,
 	.set_frame_retries = dw1000_set_frame_retries,
 	.set_promiscuous_mode = dw1000_set_promiscuous_mode,
 };
@@ -1228,9 +1207,10 @@ static int dw1000_probe(struct spi_device *spi)
 	hw->parent = &spi->dev;
 
 	/* Report capabilities */
-	hw->flags = (IEEE802154_HW_TX_OMIT_CKSUM | IEEE802154_HW_LBT |
-		     IEEE802154_HW_CSMA_PARAMS | IEEE802154_HW_FRAME_RETRIES |
-		     IEEE802154_HW_AFILT | IEEE802154_HW_PROMISCUOUS |
+	hw->flags = (IEEE802154_HW_TX_OMIT_CKSUM |
+		     IEEE802154_HW_FRAME_RETRIES |
+		     IEEE802154_HW_AFILT |
+		     IEEE802154_HW_PROMISCUOUS |
 		     IEEE802154_HW_RX_OMIT_CKSUM |
 		     IEEE802154_HW_RX_DROP_BAD_CKSUM);
 	hw->phy->supported.channels[DW1000_CHANNEL_PAGE] = DW1000_CHANNELS;
