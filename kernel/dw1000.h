@@ -188,6 +188,11 @@ struct dw1000_dev_id {
 #define DW1000_CHAN_CTRL_RX_PCODE(n)		((n) << 27)
 #define DW1000_CHAN_CTRL_RX_PCODE_MASK		DW1000_CHAN_CTRL_RX_PCODE(0x1f)
 
+/* Automatic gain control registers */
+#define DW1000_AGC_CTRL_TUNE1		0x04
+#define DW1000_AGC_CTRL_TUNE2		0x0c
+#define DW1000_AGC_CTRL_TUNE3		0x12
+
 /* GPIO control registers */
 #define DW1000_GPIO_CTRL_MODE		0x00
 #define DW1000_GPIO_CTRL_MODE_MSGP0_RXOKLED	0x00000040UL
@@ -229,10 +234,20 @@ struct dw1000_dev_id {
 #define DW1000_LDELOAD_WAIT_MAX_US 500
 
 /* Pulse repetition frequencies */
-enum dw1000_prf {
+enum dw1000_prf_code {
 	DW1000_PRF_SLOW,
 	DW1000_PRF_FAST,
 	DW1000_PRF_COUNT
+};
+
+/* Channel-independent pulse repetition frequency configuration */
+struct dw1000_prf {
+	/* Frequency (in MHz) */
+	unsigned int mhz;
+	/* Channel control register RX PRF value */
+	uint32_t chan_ctrl_rxprf;
+	/* Automatic gain control tuning register 1 value */
+	uint8_t agc_tune1[2];
 };
 
 /* Channel configuration */
@@ -329,7 +344,7 @@ struct dw1000 {
 	/* Preamble code */
 	unsigned int preamble;
 	/* Pulse repetition frequency */
-	enum dw1000_prf prf;
+	enum dw1000_prf_code prf;
 	/* Smart power control enabled */
 	bool smart_power;
 };

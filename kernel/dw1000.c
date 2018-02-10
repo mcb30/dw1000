@@ -357,18 +357,29 @@ static int dw1000_regmap_init(struct dw1000 *dw)
  *
  * Radio configuration
  *
+ * All magic register values are taken directly from the datasheet.
+ *
  */
 
-/* Pulse repetition frequencies */
-static const unsigned int dw1000_prf[DW1000_PRF_COUNT] = {
-	[DW1000_PRF_SLOW] = DW1000_PRF_SLOW_MHZ,
-	[DW1000_PRF_FAST] = DW1000_PRF_FAST_MHZ,
+/* Fixed configurations */
+static const uint8_t dw1000_agc_tune2[4] = { 0x07, 0xa9, 0x02, 0x25 };
+static const uint8_t dw1000_agc_tune3[2] = { 0x35, 0x00 };
+
+/* Pulse repetition frequency configurations */
+static const struct dw1000_prf dw1000_prfs[DW1000_PRF_COUNT] = {
+	[DW1000_PRF_SLOW] = {
+		.mhz = DW1000_PRF_SLOW_MHZ,
+		.chan_ctrl_rxprf = DW1000_CHAN_CTRL_RXPRF_SLOW,
+		.agc_tune1 = { 0x70, 0x88 },
+	},
+	[DW1000_PRF_FAST] = {
+		.mhz = DW1000_PRF_FAST_MHZ,
+		.chan_ctrl_rxprf = DW1000_CHAN_CTRL_RXPRF_FAST,
+		.agc_tune1 = { 0x9b, 0x88 },
+	},
 };
 
-/* Channel definitions
- *
- * Magic register values are taken directly from the datasheet.
- */
+/* Channel configurations */
 static const struct dw1000_channel dw1000_channels[] = {
 	[1] = {
 		.rf_txctrl = { 0x40, 0x5c, 0x00 },
@@ -555,16 +566,19 @@ static int dw1000_configure_preamble(struct dw1000 *dw)
  */
 static int dw1000_configure_prf(struct dw1000 *dw)
 {
-	static const uint32_t chan_ctrl[DW1000_PRF_COUNT] = {
-		[DW1000_PRF_SLOW] = DW1000_CHAN_CTRL_RXPRF_SLOW,
-		[DW1000_PRF_FAST] = DW1000_CHAN_CTRL_RXPRF_FAST,
-	};
+	const struct dw1000_prf *prf = &dw1000_prfs[dw->prf];
 	int rc;
 
 	/* Set receive pulse repetition frequency */
 	if ((rc = regmap_update_bits(dw->chan_ctrl.regs, 0,
 				     DW1000_CHAN_CTRL_RXPRF_MASK,
-				     chan_ctrl[dw->prf])) != 0)
+				     prf->chan_ctrl_rxprf)) != 0)
+		return rc;
+
+	/* Update automatic gain control tuning registers */
+	if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_CTRL_TUNE1,
+				   prf->agc_tune1,
+				   sizeof(prf->agc_tune1))) != 0)
 		return rc;
 
 	return 0;
@@ -613,6 +627,29 @@ static int dw1000_configure_channel(struct dw1000 *dw)
 }
 
 /**
+ * dw1000_configure_fixed() - Configure fixed radio parameters
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_configure_fixed(struct dw1000 *dw)
+{
+	int rc;
+
+	/* Tune automatic gain control */
+	if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_CTRL_TUNE2,
+				   dw1000_agc_tune2,
+				   sizeof(dw1000_agc_tune2))) != 0)
+		return rc;
+	if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_CTRL_TUNE3,
+				   dw1000_agc_tune3,
+				   sizeof(dw1000_agc_tune3))) != 0)
+		return rc;
+
+	return 0;
+}
+
+/**
  * dw1000_configure() - Configure all radio parameters
  *
  * @dw:			DW1000 device
@@ -621,6 +658,10 @@ static int dw1000_configure_channel(struct dw1000 *dw)
 static int dw1000_configure(struct dw1000 *dw)
 {
 	int rc;
+
+	/* Configure fixed parameters */
+	if ((rc = dw1000_configure_fixed(dw)) != 0)
+		return rc;
 
 	/* Configure channel */
 	if ((rc = dw1000_configure_channel(dw)) != 0)
@@ -702,7 +743,7 @@ static int dw1000_change_preamble(struct dw1000 *dw, unsigned int preamble)
  * @prf:		Pulse repetition frequency
  * @return:		0 on success or -errno
  */
-static int dw1000_change_prf(struct dw1000 *dw, enum dw1000_prf prf)
+static int dw1000_change_prf(struct dw1000 *dw, enum dw1000_prf_code prf)
 {
 	int rc;
 
@@ -722,7 +763,7 @@ static int dw1000_change_prf(struct dw1000 *dw, enum dw1000_prf prf)
 		return rc;
 
 	dev_dbg(dw->dev, "set pulse repetition frequency %dMHz\n",
-		dw1000_prf[dw->prf]);
+		dw1000_prfs[dw->prf].mhz);
 	return 0;
 }
 
@@ -989,14 +1030,14 @@ static ssize_t dw1000_show_prf(struct device *dev,
 {
 	struct dw1000 *dw = to_dw1000(dev);
 
-	return sprintf(buf, "%d\n", dw1000_prf[dw->prf]);
+	return sprintf(buf, "%d\n", dw1000_prfs[dw->prf].mhz);
 }
 static ssize_t dw1000_store_prf(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count)
 {
 	struct dw1000 *dw = to_dw1000(dev);
-	enum dw1000_prf prf;
+	enum dw1000_prf_code prf;
 	int value;
 	int rc;
 
