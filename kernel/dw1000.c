@@ -1155,6 +1155,8 @@ static int dw1000_init(struct dw1000 *dw)
 	uint32_t sys_cfg_filters;
 	uint32_t sys_cfg_mask;
 	uint32_t sys_cfg_val;
+	uint32_t gpio_ctrl_mask;
+	uint32_t gpio_ctrl_val;
 	int rc;
 
 	/* Set system configuration:
@@ -1175,6 +1177,23 @@ static int dw1000_init(struct dw1000 *dw)
 	sys_cfg_val = (sys_cfg_filters | DW1000_SYS_CFG_RXAUTR);
 	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, sys_cfg_mask,
 				     sys_cfg_val)) != 0)
+		return rc;
+
+	/* Enable LEDs */
+	gpio_ctrl_mask = (DW1000_GPIO_CTRL_MODE_MSGP0_MASK |
+			  DW1000_GPIO_CTRL_MODE_MSGP1_MASK |
+			  DW1000_GPIO_CTRL_MODE_MSGP2_MASK |
+			  DW1000_GPIO_CTRL_MODE_MSGP3_MASK);
+	gpio_ctrl_val = (DW1000_GPIO_CTRL_MODE_MSGP0_RXOKLED |
+			 DW1000_GPIO_CTRL_MODE_MSGP1_SFDLED |
+			 DW1000_GPIO_CTRL_MODE_MSGP2_RXLED |
+			 DW1000_GPIO_CTRL_MODE_MSGP3_TXLED);
+	if ((rc = regmap_update_bits(dw->gpio_ctrl.regs, DW1000_GPIO_CTRL_MODE,
+				     gpio_ctrl_mask, gpio_ctrl_val)) != 0)
+		return rc;
+
+	/* Configure radio */
+	if ((rc = dw1000_configure(dw)) != 0)
 		return rc;
 
 	return 0;
@@ -1233,10 +1252,6 @@ static int dw1000_probe(struct spi_device *spi)
 		goto err_init;
 	}
 
-	/* Configure radio */
-	if ((rc = dw1000_configure(dw)) != 0)
-		goto err_configure;
-
 	/* Add attribute group */
 	if ((rc = sysfs_create_group(&dw->dev->kobj, &dw1000_attr_group)) != 0)
 		goto err_create_group;
@@ -1254,7 +1269,6 @@ static int dw1000_probe(struct spi_device *spi)
  err_register_hw:
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
  err_create_group:
- err_configure:
  err_init:
  err_reset:
  err_regmap_init:
