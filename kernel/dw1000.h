@@ -210,11 +210,23 @@ struct dw1000_dev_id {
 #define DW1000_FS_CTRL_FS_PLLCFG	0x07
 #define DW1000_FS_CTRL_FS_PLLTUNE	0x0b
 
+/* One-time programmable memory interface registers */
+#define DW1000_OTP_IF_CTRL		0x06
+#define DW1000_OTP_IF_CTRL_LDELOAD		0x8000
+
 /* Power management and system control registers */
 #define DW1000_PMSC_CTRL0		0x00
 #define DW1000_PMSC_CTRL0_SYSCLKS_MASK		0x00000003UL
+#define DW1000_PMSC_CTRL0_SYSCLKS_AUTO		0x00000000UL
 #define DW1000_PMSC_CTRL0_SYSCLKS_SLOW		0x00000001UL
+#define DW1000_PMSC_CTRL0_LDE_HACK_PRE		0x00000300UL
+#define DW1000_PMSC_CTRL0_LDE_HACK_POST		0x00000200UL
+#define DW1000_PMSC_CTRL0_LDE_HACK_MASK		0x00000300UL
 #define DW1000_PMSC_CTRL0_SOFTRESET_MASK	0xf0000000UL
+
+/* Time required for LDE microcode load to complete */
+#define DW1000_LDELOAD_WAIT_MIN_US 150
+#define DW1000_LDELOAD_WAIT_MAX_US 500
 
 /* Pulse repetition frequencies */
 enum dw1000_prf {

@@ -1104,7 +1104,7 @@ static int dw1000_reset(struct dw1000 *dw)
 	struct dw1000_dev_id id;
 	int rc;
 
-	/* Force slow clock speed */
+	/* Force slow SPI clock speed */
 	dw->spi->max_speed_hz = DW1000_SPI_SLOW_HZ;
 
 	/* Read device ID register */
@@ -1134,10 +1134,59 @@ static int dw1000_reset(struct dw1000 *dw)
 	if ((rc = dw1000_check_dev_id(dw, &id)) != 0)
 		return rc;
 
-	/* Switch to full clock speed */
+	/* Switch to full SPI clock speed */
 	dw->spi->max_speed_hz = DW1000_SPI_FAST_HZ;
 
 	/* Recheck device ID to ensure bus is still operational */
+	if ((rc = dw1000_check_dev_id(dw, &id)) != 0)
+		return rc;
+
+	return 0;
+}
+
+/**
+ * dw1000_load_lde() - Load leading edge detection microcode
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_load_lde(struct dw1000 *dw)
+{
+	struct dw1000_dev_id id;
+	int rc;
+
+	/* Force slow SPI clock speed */
+	dw->spi->max_speed_hz = DW1000_SPI_SLOW_HZ;
+
+	/* Force system clock to 19.2 MHz XTI clock and prepare for LDE load */
+	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				     (DW1000_PMSC_CTRL0_SYSCLKS_MASK |
+				      DW1000_PMSC_CTRL0_LDE_HACK_MASK),
+				     (DW1000_PMSC_CTRL0_SYSCLKS_SLOW |
+				      DW1000_PMSC_CTRL0_LDE_HACK_PRE))) != 0)
+		return rc;
+
+	/* Initiate load of LDE microcode */
+	if ((rc = regmap_update_bits(dw->otp_if.regs, DW1000_OTP_IF_CTRL,
+				     DW1000_OTP_IF_CTRL_LDELOAD,
+				     DW1000_OTP_IF_CTRL_LDELOAD)) != 0)
+		return rc;
+
+	/* Allow time for microcode load to complete */
+	usleep_range(DW1000_LDELOAD_WAIT_MIN_US, DW1000_LDELOAD_WAIT_MAX_US);
+
+	/* Restore system clock to automatic selection */
+	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				     (DW1000_PMSC_CTRL0_SYSCLKS_MASK |
+				      DW1000_PMSC_CTRL0_LDE_HACK_MASK),
+				     (DW1000_PMSC_CTRL0_SYSCLKS_AUTO |
+				      DW1000_PMSC_CTRL0_LDE_HACK_POST))) != 0)
+		return rc;
+
+	/* Switch to full SPI clock speed */
+	dw->spi->max_speed_hz = DW1000_SPI_FAST_HZ;
+
+	    /* Recheck device ID to ensure bus is still operational */
 	if ((rc = dw1000_check_dev_id(dw, &id)) != 0)
 		return rc;
 
@@ -1190,6 +1239,10 @@ static int dw1000_init(struct dw1000 *dw)
 			 DW1000_GPIO_CTRL_MODE_MSGP3_TXLED);
 	if ((rc = regmap_update_bits(dw->gpio_ctrl.regs, DW1000_GPIO_CTRL_MODE,
 				     gpio_ctrl_mask, gpio_ctrl_val)) != 0)
+		return rc;
+
+	/* Load LDE microcode */
+	if ((rc = dw1000_load_lde(dw)) != 0)
 		return rc;
 
 	/* Configure radio */
