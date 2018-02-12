@@ -86,47 +86,93 @@ static int dw1000_rate(unsigned int rate)
  *
  */
 
-/* SPI message */
-struct dw1000_message {
-	struct spi_message msg;
-	struct spi_transfer xfer[2];
-	struct dw1000_spi_header header;
-};
-
 /**
- * dw1000_message_init() - Initialise SPI message
+ * dw1000_init_transfers() - Initialise transfer set
  *
- * @msg:		SPI message to initialise
+ * @msg:		SPI message
+ * @xfers:		SPI transfer set
  * @file:		Register file
  * @offset:		Offset within register file
- * @return:		SPI transfer to use for message payload
  */
-static struct spi_transfer * dw1000_message_init(struct dw1000_message *msg,
-						 unsigned int file,
-						 unsigned int offset)
+static void dw1000_init_transfers(struct spi_message *msg,
+				  struct dw1000_spi_transfers *xfers,
+				  unsigned int file, unsigned int offset)
 {
-	struct spi_transfer *xfer;
+	struct spi_transfer *previous;
 
-	/* Construct header */
-	spi_message_init(&msg->msg);
-	xfer = &msg->xfer[0];
-	xfer->tx_buf = &msg->header;
-	msg->header.command = file;
+	/* Construct transfers */
+	xfers->header.tx_buf = &xfers->command;
+	xfers->command.file = file;
 	if (likely(offset == 0)) {
-		xfer->len = offsetofend(typeof(msg->header), command);
+		xfers->header.len = offsetofend(typeof(xfers->command), file);
 	} else if (offset < DW1000_EXTENDED) {
-		msg->header.command |= DW1000_OFFSET;
-		msg->header.low = offset;
-		xfer->len = offsetofend(typeof(msg->header), low);
+		xfers->command.file |= DW1000_OFFSET;
+		xfers->command.low = offset;
+		xfers->header.len = offsetofend(typeof(xfers->command), low);
 	} else {
-		msg->header.command |= DW1000_OFFSET;
-		msg->header.low = (offset | DW1000_EXTENDED);
-		msg->header.high = (offset >> DW1000_EXTENDED_SHIFT);
-		xfer->len = offsetofend(typeof(msg->header), high);
+		xfers->command.file |= DW1000_OFFSET;
+		xfers->command.low = (offset | DW1000_EXTENDED);
+		xfers->command.high = (offset >> DW1000_EXTENDED_SHIFT);
+		xfers->header.len = offsetofend(typeof(xfers->command), high);
 	}
-	spi_message_add_tail(xfer++, &msg->msg);
 
-	return xfer;
+	/* Toggle chip select for this transfer set if required */
+	if (!list_empty(&msg->transfers)) {
+		previous = list_last_entry(&msg->transfers, struct spi_transfer,
+					   transfer_list);
+		previous->cs_change = 1;
+	}
+
+	/* Add transfers to message */
+	spi_message_add_tail(&xfers->header, msg);
+	spi_message_add_tail(&xfers->data, msg);
+}
+
+/**
+ * dw1000_init_read() - Initialise read transfer set
+ *
+ * @msg:		SPI message
+ * @xfers:		SPI transfer set
+ * @file:		Register file
+ * @offset:		Offset within register file
+ * @data:		Data buffer
+ * @len:		Length of data
+ */
+static void dw1000_init_read(struct spi_message *msg,
+			     struct dw1000_spi_transfers *xfers,
+			     unsigned int file, unsigned int offset,
+			     void *data, size_t len)
+{
+	/* Initialise transfers */
+	dw1000_init_transfers(msg, xfers, file, offset);
+
+	/* Construct data transfer */
+	xfers->data.rx_buf = data;
+	xfers->data.len = len;
+}
+
+/**
+ * dw1000_init_write() - Initialise write transfer set
+ *
+ * @msg:		SPI message
+ * @xfers:		SPI transfer set
+ * @file:		Register file
+ * @offset:		Offset within register file
+ * @data:		Data buffer
+ * @len:		Length of data
+ */
+static void dw1000_init_write(struct spi_message *msg,
+			      struct dw1000_spi_transfers *xfers,
+			      unsigned int file, unsigned int offset,
+			      const void *data, size_t len)
+{
+	/* Initialise transfers */
+	dw1000_init_transfers(msg, xfers, file, offset);
+	xfers->command.file |= DW1000_WRITE;
+
+	/* Construct data transfer */
+	xfers->data.tx_buf = data;
+	xfers->data.len = len;
 }
 
 /**
@@ -142,17 +188,17 @@ static struct spi_transfer * dw1000_message_init(struct dw1000_message *msg,
 static int dw1000_read(struct dw1000 *dw, unsigned int file,
 		       unsigned int offset, void *data, size_t len)
 {
-	struct dw1000_message msg;
-	struct spi_transfer *xfer;
+	struct {
+		struct spi_message msg;
+		struct dw1000_spi_transfers xfers;
+	} read;
 
 	/* Construct message */
-	memset(&msg, 0, sizeof(msg));
-	xfer = dw1000_message_init(&msg, file, offset);
-	xfer->rx_buf = data;
-	xfer->len = len;
-	spi_message_add_tail(xfer, &msg.msg);
+	memset(&read, 0, sizeof(read));
+	spi_message_init_no_memset(&read.msg);
+	dw1000_init_read(&read.msg, &read.xfers, file, offset, data, len);
 
-	return spi_sync(dw->spi, &msg.msg);
+	return spi_sync(dw->spi, &read.msg);
 }
 
 /**
@@ -168,52 +214,17 @@ static int dw1000_read(struct dw1000 *dw, unsigned int file,
 static int dw1000_write(struct dw1000 *dw, unsigned int file,
 			unsigned int offset, const void *data, size_t len)
 {
-	struct dw1000_message msg;
-	struct spi_transfer *xfer;
+	struct {
+		struct spi_message msg;
+		struct dw1000_spi_transfers xfers;
+	} write;
 
 	/* Construct message */
-	memset(&msg, 0, sizeof(msg));
-	xfer = dw1000_message_init(&msg, file, offset);
-	msg.header.command |= DW1000_WRITE;
-	xfer->tx_buf = data;
-	xfer->len = len;
-	spi_message_add_tail(xfer, &msg.msg);
+	memset(&write, 0, sizeof(write));
+	spi_message_init_no_memset(&write.msg);
+	dw1000_init_write(&write.msg, &write.xfers, file, offset, data, len);
 
-	return spi_sync(dw->spi, &msg.msg);
-}
-
-/**
- * dw1000_write_async() - Write register(s) asynchronously
- *
- * @dw:			DW1000 device
- * @file:		Register file
- * @offset:		Offset within register file
- * @data:		Raw register value
- * @len:		Length of register value
- * @msg:		SPI message for asynchronous transfer
- * @complete:		Completion callback
- * @return:		0 on success or -errno
- */
-static int dw1000_write_async(struct dw1000 *dw, unsigned int file,
-			      unsigned int offset, const void *data,
-			      size_t len, struct dw1000_message *msg,
-			      void (*complete)(struct dw1000 *dw))
-{
-	struct spi_transfer *xfer;
-
-	/* Construct message */
-	memset(msg, 0, sizeof(*msg));
-	xfer = dw1000_message_init(msg, file, offset);
-	msg->header.command |= DW1000_WRITE;
-	xfer->tx_buf = data;
-	xfer->len = len;
-	spi_message_add_tail(xfer, &msg->msg);
-
-	/* Prepare completion */
-	msg->msg.complete = (void (*)(void *))complete;
-	msg->msg.context = dw;
-
-	return spi_async(dw->spi, &msg->msg);
+	return spi_sync(dw->spi, &write.msg);
 }
 
 /******************************************************************************
@@ -301,7 +312,7 @@ DW1000_REGMAP(tx_fctrl, DW1000_TX_FCTRL, DW1000_TX_FCTRL_LEN, uint8_t );
 DW1000_REGMAP(tx_buffer, DW1000_TX_BUFFER, DW1000_TX_BUFFER_LEN, uint8_t );
 DW1000_REGMAP(dx_time, DW1000_DX_TIME, DW1000_DX_TIME_LEN, uint8_t );
 DW1000_REGMAP(rx_fwto, DW1000_RX_FWTO, DW1000_RX_FWTO_LEN, uint16_t );
-DW1000_REGMAP(sys_ctrl, DW1000_SYS_CTRL, DW1000_SYS_CTRL_LEN, uint32_t );
+DW1000_REGMAP(sys_ctrl, DW1000_SYS_CTRL, DW1000_SYS_CTRL_LEN, uint8_t );
 DW1000_REGMAP(sys_mask, DW1000_SYS_MASK, DW1000_SYS_MASK_LEN, uint8_t );
 DW1000_REGMAP(sys_status, DW1000_SYS_STATUS, DW1000_SYS_STATUS_LEN, uint8_t );
 DW1000_REGMAP(rx_finfo, DW1000_RX_FINFO, DW1000_RX_FINFO_LEN, uint32_t );
@@ -555,6 +566,7 @@ static const struct dw1000_prf_config dw1000_prf_configs[] = {
 /* Data rate configurations */
 static const struct dw1000_rate_config dw1000_rate_configs[] = {
 	[DW1000_RATE_110K] = {
+		.tdsym_ns = 8205,
 		.txpsr = 0x3,
 		.drx_tune0b = 0x000a,
 		.drx_tune1b = 0x0064,
@@ -565,6 +577,7 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 		.drx_tune4h = 0x0028,
 	},
 	[DW1000_RATE_850K] = {
+		.tdsym_ns = 1025,
 		.txpsr = 0x2,
 		.drx_tune0b = 0x0001,
 		.drx_tune1b = 0x0020,
@@ -575,6 +588,7 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 		.drx_tune4h = 0x0028,
 	},
 	[DW1000_RATE_6800K] = {
+		.tdsym_ns = 128,
 		.txpsr = 0x1,
 		.drx_tune0b = 0x0001,
 		.drx_tune1b = 0x0010,
@@ -658,6 +672,15 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	prf_cfg = &dw1000_prf_configs[prf];
 	rate_cfg = &dw1000_rate_configs[rate];
 	fixed_cfg = &dw1000_fixed_config;
+
+	/* Calculate inter-frame spacing */
+	dw->phy->symbol_duration = (rate_cfg->tdsym_ns / 1000);
+	if (!dw->phy->symbol_duration)
+		dw->phy->symbol_duration = 1;
+	dw->phy->lifs_period =
+		((IEEE802154_LIFS_PERIOD * rate_cfg->tdsym_ns) / 1000);
+	dw->phy->sifs_period =
+		((IEEE802154_SIFS_PERIOD * rate_cfg->tdsym_ns) / 1000);
 
 	/* SYS_CFG register */
 	if (changed & (DW1000_CONFIGURE_RATE | DW1000_CONFIGURE_SMART_POWER)) {
@@ -971,13 +994,88 @@ static int dw1000_start(struct ieee802154_hw *hw)
 static void dw1000_stop(struct ieee802154_hw *hw)
 {
 	struct dw1000 *dw = hw->priv;
+	int rc;
+
+	/* Disable receiver and transmitter */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
+			       DW1000_SYS_CTRL0_TRXOFF)) != 0) {
+		dev_err(dw->dev, "could not disable: %d\n", rc);
+		return;
+	}
 
 	dev_info(dw->dev, "stopped\n");
 }
 
+/**
+ * dw1000_xmit_complete() - Handle transmit submission completion
+ *
+ * @context:		IEEE 802.15.4 device
+ */
+static void dw1000_xmit_complete(void *context)
+{
+	struct ieee802154_hw *hw = context;
+	struct dw1000 *dw = hw->priv;
+	struct dw1000_xmit *tx = &dw->tx;
+	struct sk_buff *skb;
+
+	//
+	dev_info(dw->dev, "tx complete\n");
+	skb = tx->skb;
+	tx->skb = NULL;
+	ieee802154_xmit_complete(hw, skb, false);
+}
+
+/**
+ * dw1000_xmit_async() - Start packet transmission
+ *
+ * @hw:			IEEE 802.15.4 device
+ * @skb:		Socket buffer
+ * @return:		0 on success or -errno
+ */
 static int dw1000_xmit_async(struct ieee802154_hw *hw, struct sk_buff *skb)
 {
-	return -ENOTSUPP;
+	static const uint8_t txstrt = DW1000_SYS_CTRL0_TXSTRT;
+	struct dw1000 *dw = hw->priv;
+	struct dw1000_xmit *tx = &dw->tx;
+	int rc;
+
+	/* Sanity check */
+	if (tx->skb) {
+		dev_err(dw->dev, "concurrent transmit is not supported\n");
+		rc = -ENOBUFS;
+		goto err_concurrent;
+	}
+
+	/* Initialise transmission */
+	memset(tx, 0, sizeof(*tx));
+	tx->skb = skb;
+	spi_message_init_no_memset(&tx->msg);
+	tx->msg.complete = dw1000_xmit_complete;
+	tx->msg.context = hw;
+
+	/* Construct data buffer transfer */
+	dw1000_init_write(&tx->msg, &tx->tx_buffer, DW1000_TX_BUFFER, 0,
+			  skb->data, skb->len);
+
+	/* Construct frame control transfer */
+	tx->len = DW1000_TX_FCTRL0_TFLEN(skb->len);
+	dw1000_init_write(&tx->msg, &tx->tx_fctrl, DW1000_TX_FCTRL,
+			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
+
+	/* Construct doorbell transfer */
+	dw1000_init_write(&tx->msg, &tx->sys_ctrl, DW1000_SYS_CTRL,
+			  DW1000_SYS_CTRL0, &txstrt, sizeof(txstrt));
+
+	/* Submit transmission */
+	if ((rc = spi_async(dw->spi, &tx->msg)) != 0)
+		goto err_spi;
+
+	return 0;
+
+ err_spi:
+	tx->skb = NULL;
+ err_concurrent:
+	return rc;
 }
 
 static int dw1000_ed(struct ieee802154_hw *hw, u8 *level)
@@ -1089,14 +1187,6 @@ static int dw1000_set_cca_ed_level(struct ieee802154_hw *hw, s32 mbm)
 	return 0;
 }
 
-static int dw1000_set_frame_retries(struct ieee802154_hw *hw, s8 retries)
-{
-	struct dw1000 *dw = hw->priv;
-
-	dev_info(dw->dev, "setting frame retries %d\n", retries);
-	return 0;
-}
-
 /**
  * dw1000_set_promiscuous_mode() - Enable/disable promiscuous mode
  *
@@ -1129,7 +1219,6 @@ static const struct ieee802154_ops dw1000_ops = {
 	.set_hw_addr_filt = dw1000_set_hw_addr_filt,
 	.set_cca_mode = dw1000_set_cca_mode,
 	.set_cca_ed_level = dw1000_set_cca_ed_level,
-	.set_frame_retries = dw1000_set_frame_retries,
 	.set_promiscuous_mode = dw1000_set_promiscuous_mode,
 };
 
@@ -1389,7 +1478,7 @@ static int dw1000_load_lde(struct dw1000 *dw)
 	/* Switch to full SPI clock speed */
 	dw->spi->max_speed_hz = DW1000_SPI_FAST_HZ;
 
-	    /* Recheck device ID to ensure bus is still operational */
+	/* Recheck device ID to ensure bus is still operational */
 	if ((rc = dw1000_check_dev_id(dw, &id)) != 0)
 		return rc;
 
@@ -1404,11 +1493,9 @@ static int dw1000_load_lde(struct dw1000 *dw)
  */
 static int dw1000_init(struct dw1000 *dw)
 {
-	uint32_t sys_cfg_filters;
-	uint32_t sys_cfg_mask;
-	uint32_t sys_cfg_value;
-	uint32_t gpio_mode_mask;
-	uint32_t gpio_mode_value;
+	int sys_cfg_filters;
+	int mask;
+	int value;
 	int rc;
 
 	/* Set system configuration:
@@ -1424,24 +1511,43 @@ static int dw1000_init(struct dw1000 *dw)
 			   DW1000_SYS_CFG_FFAA | DW1000_SYS_CFG_FFAM |
 			   DW1000_SYS_CFG_FFAR | DW1000_SYS_CFG_FFA4 |
 			   DW1000_SYS_CFG_FFA5);
-	sys_cfg_mask = (sys_cfg_filters | DW1000_SYS_CFG_DIS_DRXB |
-			DW1000_SYS_CFG_RXAUTR);
-	sys_cfg_value = (sys_cfg_filters | DW1000_SYS_CFG_RXAUTR);
-	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, sys_cfg_mask,
-				     sys_cfg_value)) != 0)
+	mask = (sys_cfg_filters | DW1000_SYS_CFG_DIS_DRXB |
+		DW1000_SYS_CFG_RXAUTR);
+	value = (sys_cfg_filters | DW1000_SYS_CFG_RXAUTR);
+	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, mask, value)) != 0)
 		return rc;
 
-	/* Enable LEDs */
-	gpio_mode_mask = (DW1000_GPIO_MODE_MSGP0_MASK |
-			  DW1000_GPIO_MODE_MSGP1_MASK |
-			  DW1000_GPIO_MODE_MSGP2_MASK |
-			  DW1000_GPIO_MODE_MSGP3_MASK);
-	gpio_mode_value = (DW1000_GPIO_MODE_MSGP0_RXOKLED |
-			   DW1000_GPIO_MODE_MSGP1_SFDLED |
-			   DW1000_GPIO_MODE_MSGP2_RXLED |
-			   DW1000_GPIO_MODE_MSGP3_TXLED);
+	/* Handle short inter-frame gaps in hardware */
+	value = DW1000_TX_FCTRL4_IFSDELAY(IEEE802154_SIFS_PERIOD);
+	if ((rc = regmap_write(dw->tx_fctrl.regs, DW1000_TX_FCTRL4,
+			       value)) != 0)
+		return rc;
+
+	/* Enable GPIO block and kilohertz clock for LED blinking */
+	mask = (DW1000_PMSC_CTRL0_GPCE | DW1000_PMSC_CTRL0_GPRN |
+		DW1000_PMSC_CTRL0_GPDCE | DW1000_PMSC_CTRL0_GPDRN |
+		DW1000_PMSC_CTRL0_KHZCLKEN);
+	value = (DW1000_PMSC_CTRL0_GPCE | DW1000_PMSC_CTRL0_GPRN |
+		 DW1000_PMSC_CTRL0_GPDCE | DW1000_PMSC_CTRL0_GPDRN |
+		 DW1000_PMSC_CTRL0_KHZCLKEN);
+	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				     mask, value)) != 0)
+		return rc;
+
+	/* Configure GPIOs as LED outputs */
+	mask = (DW1000_GPIO_MODE_MSGP0_MASK | DW1000_GPIO_MODE_MSGP1_MASK |
+		DW1000_GPIO_MODE_MSGP2_MASK | DW1000_GPIO_MODE_MSGP3_MASK);
+	value = (DW1000_GPIO_MODE_MSGP0_RXOKLED | DW1000_GPIO_MODE_MSGP1_SFDLED|
+		 DW1000_GPIO_MODE_MSGP2_RXLED | DW1000_GPIO_MODE_MSGP3_TXLED);
 	if ((rc = regmap_update_bits(dw->gpio_ctrl.regs, DW1000_GPIO_MODE,
-				     gpio_mode_mask, gpio_mode_value)) != 0)
+				     mask, value)) != 0)
+		return rc;
+
+	/* Enable LED blinking */
+	mask = (DW1000_PMSC_LEDC_BLINK_TIM_MASK | DW1000_PMSC_LEDC_BLNKEN);
+	value = (DW1000_PMSC_LEDC_BLINK_TIM_DEFAULT | DW1000_PMSC_LEDC_BLNKEN);
+	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_LEDC,
+				     mask, value)) != 0)
 		return rc;
 
 	/* Load LDE microcode */
@@ -1476,6 +1582,7 @@ static int dw1000_probe(struct spi_device *spi)
 	dw = hw->priv;
 	dw->spi = spi;
 	dw->dev = &spi->dev;
+	dw->phy = hw->phy;
 	dw->channel = DW1000_CHANNEL_DEFAULT;
 	dw->pcode = 0;
 	dw->prf = DW1000_PRF_64M;
@@ -1485,7 +1592,6 @@ static int dw1000_probe(struct spi_device *spi)
 
 	/* Report capabilities */
 	hw->flags = (IEEE802154_HW_TX_OMIT_CKSUM |
-		     IEEE802154_HW_FRAME_RETRIES |
 		     IEEE802154_HW_AFILT |
 		     IEEE802154_HW_PROMISCUOUS |
 		     IEEE802154_HW_RX_OMIT_CKSUM |

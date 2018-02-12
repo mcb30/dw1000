@@ -25,6 +25,7 @@
 
 #include <linux/device.h>
 #include <linux/regmap.h>
+#include <linux/spi/spi.h>
 
 /* Supported channel page (UWB only) */
 #define DW1000_CHANNEL_PAGE 4
@@ -41,10 +42,10 @@
 /* Maximum SPI bus speed when PLL is locked */
 #define DW1000_SPI_FAST_HZ 20000000
 
-/* SPI bus header */
-struct dw1000_spi_header {
+/* SPI command */
+struct dw1000_spi_command {
 	/* Register file and command */
-	uint8_t command;
+	uint8_t file;
 	/* Low order 7 bits and extended address indicator */
 	uint8_t low;
 	/* High order 8 bits */
@@ -60,6 +61,16 @@ struct dw1000_spi_header {
 
 /* SPI bus header extended offset shift */
 #define DW1000_EXTENDED_SHIFT 7
+
+/* SPI transfer set */
+struct dw1000_spi_transfers {
+	/* SPI command */
+	struct dw1000_spi_command command;
+	/* SPI bus header transfer */
+	struct spi_transfer header;
+	/* SPI bus data transfer */
+	struct spi_transfer data;
+};
 
 /* Register files */
 #define DW1000_DEV_ID		0x00
@@ -172,6 +183,8 @@ struct dw1000_dev_id {
 #define DW1000_SYS_CFG_RXAUTR			0x20000000UL
 
 /* Transmit frame control register */
+#define DW1000_TX_FCTRL0		0x00
+#define DW1000_TX_FCTRL0_TFLEN(n)		((n) << 0)
 #define DW1000_TX_FCTRL1		0x01
 #define DW1000_TX_FCTRL1_TXBR(n)		((n) << 5)
 #define DW1000_TX_FCTRL1_TXBR_MASK		DW1000_TX_FCTRL1_TXBR(0x3)
@@ -181,6 +194,20 @@ struct dw1000_dev_id {
 #define DW1000_TX_FCTRL2_TXPSR(n)		((n) << 2)
 #define DW1000_TX_FCTRL2_TXPSR_MASK		DW1000_TX_FCTRL2_TXPSR(0x3)
 #define DW1000_TX_FCTRL2_PE_MASK		0x30
+#define DW1000_TX_FCTRL4		0x04
+#define DW1000_TX_FCTRL4_IFSDELAY(n)		(((n) - 6) << 0)
+#define DW1000_TX_FCTRL4_IFSDELAY_MASK		DW1000_TX_FCTRL4_IFSDELAY(0xff)
+
+/* System control register */
+#define DW1000_SYS_CTRL0		0x00
+#define DW1000_SYS_CTRL0_SFCST			0x01
+#define DW1000_SYS_CTRL0_TXSTRT			0x02
+#define DW1000_SYS_CTRL0_CANSFCS		0x08
+#define DW1000_SYS_CTRL0_TRXOFF			0x40
+#define DW1000_SYS_CTRL1		0x01
+#define DW1000_SYS_CTRL1_RXENAB			0x01
+#define DW1000_SYS_CTRL3		0x03
+#define DW1000_SYS_CTRL3_HRBPT			0x01
 
 /* Channel control register */
 #define DW1000_CHAN_CTRL_TX_CHAN(n)		((n) << 0)
@@ -244,7 +271,17 @@ struct dw1000_dev_id {
 #define DW1000_PMSC_CTRL0_LDE_HACK_PRE		0x00000300UL
 #define DW1000_PMSC_CTRL0_LDE_HACK_POST		0x00000200UL
 #define DW1000_PMSC_CTRL0_LDE_HACK_MASK		0x00000300UL
+#define DW1000_PMSC_CTRL0_GPCE			0x00010000UL
+#define DW1000_PMSC_CTRL0_GPRN			0x00020000UL
+#define DW1000_PMSC_CTRL0_GPDCE			0x00040000UL
+#define DW1000_PMSC_CTRL0_GPDRN			0x00080000UL
+#define DW1000_PMSC_CTRL0_KHZCLKEN		0x00800000UL
 #define DW1000_PMSC_CTRL0_SOFTRESET_MASK	0xf0000000UL
+#define DW1000_PMSC_LEDC		0x28
+#define DW1000_PMSC_LEDC_BLINK_TIM(n)		((n) << 0)
+#define DW1000_PMSC_LEDC_BLINK_TIM_DEFAULT	DW1000_PMSC_LEDC_BLINK_TIM(0x01)
+#define DW1000_PMSC_LEDC_BLINK_TIM_MASK		DW1000_PMSC_LEDC_BLINK_TIM(0xff)
+#define DW1000_PMSC_LEDC_BLNKEN			0x00000100UL
 
 /* Time required for LDE microcode load to complete */
 #define DW1000_LDELOAD_WAIT_MIN_US 150
@@ -301,6 +338,8 @@ struct dw1000_prf_config {
 
 /* Data rate configuration */
 struct dw1000_rate_config {
+	/* Symbol duration in nanoseconds */
+	unsigned int tdsym_ns;
 	/* Transmit frame control preamble symbol repetitions value */
 	unsigned int txpsr;
 	/* Digital receiver tuning register 0B value */
@@ -347,12 +386,31 @@ struct dw1000_regmap {
 	const struct dw1000_regmap_config *config;
 };
 
+/* Single transmission */
+struct dw1000_xmit {
+	/* Socket buffer */
+	struct sk_buff *skb;
+	/* Length */
+	uint8_t len;
+	/* SPI message */
+	struct spi_message msg;
+	/* SPI transfers for data buffer */
+	struct dw1000_spi_transfers tx_buffer;
+	/* SPI transfers for frame control */
+	struct dw1000_spi_transfers tx_fctrl;
+	/* SPI transfers for doorbell */
+	struct dw1000_spi_transfers sys_ctrl;
+};
+
 /* DW1000 device */
 struct dw1000 {
 	/* SPI device */
 	struct spi_device *spi;
 	/* Generic device */
 	struct device *dev;
+	/* WPAN PHY */
+	struct wpan_phy *phy;
+
 	/* Register maps */
 	struct dw1000_regmap dev_id;
 	struct dw1000_regmap eui;
@@ -392,6 +450,7 @@ struct dw1000 {
 	struct dw1000_regmap lde_if;
 	struct dw1000_regmap dig_diag;
 	struct dw1000_regmap pmsc;
+
 	/* Channel number */
 	unsigned int channel;
 	/* Preamble code */
@@ -402,6 +461,9 @@ struct dw1000 {
 	enum dw1000_rate rate;
 	/* Smart power control enabled */
 	bool smart_power;
+
+	/* Current transmission */
+	struct dw1000_xmit tx;
 };
 
 /**
