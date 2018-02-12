@@ -24,6 +24,8 @@
 #include <linux/of.h>
 #include <linux/spi/spi.h>
 #include <linux/regmap.h>
+#include <linux/interrupt.h>
+#include <linux/workqueue.h>
 #include <net/mac802154.h>
 #include "dw1000.h"
 
@@ -313,8 +315,8 @@ DW1000_REGMAP(tx_buffer, DW1000_TX_BUFFER, DW1000_TX_BUFFER_LEN, uint8_t );
 DW1000_REGMAP(dx_time, DW1000_DX_TIME, DW1000_DX_TIME_LEN, uint8_t );
 DW1000_REGMAP(rx_fwto, DW1000_RX_FWTO, DW1000_RX_FWTO_LEN, uint16_t );
 DW1000_REGMAP(sys_ctrl, DW1000_SYS_CTRL, DW1000_SYS_CTRL_LEN, uint8_t );
-DW1000_REGMAP(sys_mask, DW1000_SYS_MASK, DW1000_SYS_MASK_LEN, uint8_t );
-DW1000_REGMAP(sys_status, DW1000_SYS_STATUS, DW1000_SYS_STATUS_LEN, uint8_t );
+DW1000_REGMAP(sys_mask, DW1000_SYS_MASK, DW1000_SYS_MASK_LEN, uint32_t );
+DW1000_REGMAP(sys_status, DW1000_SYS_STATUS, DW1000_SYS_STATUS_LEN, uint32_t );
 DW1000_REGMAP(rx_finfo, DW1000_RX_FINFO, DW1000_RX_FINFO_LEN, uint32_t );
 DW1000_REGMAP(rx_buffer, DW1000_RX_BUFFER, DW1000_RX_BUFFER_LEN, uint8_t );
 DW1000_REGMAP(rx_fqual, DW1000_RX_FQUAL, DW1000_RX_FQUAL_LEN, uint16_t );
@@ -968,6 +970,146 @@ static int dw1000_configure_smart_power(struct dw1000 *dw, bool smart_power)
 
 /******************************************************************************
  *
+ * Transmit datapath
+ *
+ */
+
+/**
+ * dw1000_xmit_async() - Start packet transmission
+ *
+ * @hw:			IEEE 802.15.4 device
+ * @skb:		Socket buffer
+ * @return:		0 on success or -errno
+ */
+static int dw1000_xmit_async(struct ieee802154_hw *hw, struct sk_buff *skb)
+{
+	struct dw1000 *dw = hw->priv;
+	struct dw1000_xmit *tx = &dw->tx;
+	int rc;
+
+	/* Sanity check */
+	if (tx->skb) {
+		dev_err(dw->dev, "concurrent transmit is not supported\n");
+		rc = -ENOBUFS;
+		goto err_concurrent;
+	}
+
+	/* Construct transmission */
+	tx->skb = skb;
+	tx->tx_buffer.data.tx_buf = skb->data;
+	tx->tx_buffer.data.len = skb->len;
+	tx->len = DW1000_TX_FCTRL0_TFLEN(skb->len);
+	tx->submitted = false;
+
+	/* Submit transmission */
+	if ((rc = spi_async(dw->spi, &tx->msg)) != 0)
+		goto err_spi;
+
+	return 0;
+
+ err_spi:
+	tx->skb = NULL;
+ err_concurrent:
+	return rc;
+}
+
+/**
+ * dw1000_xmit_complete() - Handle transmit completion
+ *
+ * @dw:			DW1000 device
+ */
+static void dw1000_xmit_complete(struct dw1000 *dw)
+{
+	struct dw1000_xmit *tx = &dw->tx;
+	struct sk_buff *skb;
+	size_t sifs_max_len;
+
+	/* Ignore if submission has not yet completed */
+	if (!tx->submitted) {
+		dev_err(dw->dev, "spurious transmit completion\n");
+		return;
+	}
+
+	/* Report completion to IEEE 802.15.4 stack */
+	skb = tx->skb;
+	tx->skb = NULL;
+	sifs_max_len = (IEEE802154_MAX_SIFS_FRAME_SIZE - IEEE802154_FCS_LEN);
+	ieee802154_xmit_complete(dw->hw, skb, (skb->len <= sifs_max_len));
+}
+
+/**
+ * dw1000_xmit_complete() - Handle transmit submission completion
+ *
+ * @context:		DW1000 device
+ */
+static void dw1000_xmit_submit_complete(void *context)
+{
+	struct dw1000 *dw = context;
+	struct dw1000_xmit *tx = &dw->tx;
+
+	/* Mark as submitted */
+	tx->submitted = true;
+
+	/* Complete immediately if submission failed */
+	if (tx->msg.status != 0) {
+		dev_err(dw->dev, "transmit submission failed: %d\n",
+			tx->msg.status);
+		dw1000_xmit_complete(dw);
+	}
+}
+
+/******************************************************************************
+ *
+ * Interrupt handling
+ *
+ */
+
+/**
+ * dw1000_isr() - Interrupt handler
+ *
+ * @irq:		Interrupt number
+ * @context:		DW1000 device
+ * @return:		IRQ status
+ */
+static irqreturn_t dw1000_isr(int irq, void *context)
+{
+	struct dw1000 *dw = context;
+
+	/* Disable interrupt and schedule status register handler */
+	disable_irq_nosync(irq);
+	schedule_work(&dw->irq_work);
+	return IRQ_HANDLED;
+}
+
+/**
+ * dw1000_irq_worker() - Interrupt status register handler
+ *
+ * @work:		Worker
+ */
+static void dw1000_irq_worker(struct work_struct *work)
+{
+	struct dw1000 *dw = container_of(work, struct dw1000, irq_work);
+	int status;
+	int rc;
+
+	/* Read interrupt status register */
+	if ((rc = regmap_read(dw->sys_status.regs, 0, &status)) != 0)
+		goto abort;
+
+	/* Handle transmit completion, if applicable */
+	if (status & DW1000_IRQ_TXFRS)
+		dw1000_xmit_complete(dw);
+
+	/* Acknowledge interrupts */
+	if ((rc = regmap_write(dw->sys_status.regs, 0, status)) != 0)
+		goto abort;
+
+ abort:
+	enable_irq(dw->spi->irq);
+}
+
+/******************************************************************************
+ *
  * IEEE 802.15.4 interface
  *
  */
@@ -981,6 +1123,13 @@ static int dw1000_configure_smart_power(struct dw1000 *dw, bool smart_power)
 static int dw1000_start(struct ieee802154_hw *hw)
 {
 	struct dw1000 *dw = hw->priv;
+	int value;
+	int rc;
+
+	/* Enable interrupt generation */
+	value = DW1000_IRQ_TXFRS;
+	if ((rc = regmap_write(dw->sys_mask.regs, 0, value)) != 0)
+		return rc;
 
 	dev_info(dw->dev, "started\n");
 	return 0;
@@ -999,83 +1148,18 @@ static void dw1000_stop(struct ieee802154_hw *hw)
 	/* Disable receiver and transmitter */
 	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
 			       DW1000_SYS_CTRL0_TRXOFF)) != 0) {
-		dev_err(dw->dev, "could not disable: %d\n", rc);
-		return;
+		dev_err(dw->dev, "could not disable TX/RX: %d\n", rc);
 	}
+
+	/* Disable further interrupt generation */
+	if ((rc = regmap_write(dw->sys_mask.regs, 0, 0)) != 0) {
+		dev_err(dw->dev, "could not disable interrupts: %d\n", rc);
+	}
+
+	/* Complete any pending interrupt work */
+	flush_work(&dw->irq_work);
 
 	dev_info(dw->dev, "stopped\n");
-}
-
-/**
- * dw1000_xmit_complete() - Handle transmit submission completion
- *
- * @context:		IEEE 802.15.4 device
- */
-static void dw1000_xmit_complete(void *context)
-{
-	struct ieee802154_hw *hw = context;
-	struct dw1000 *dw = hw->priv;
-	struct dw1000_xmit *tx = &dw->tx;
-	struct sk_buff *skb;
-
-	//
-	dev_info(dw->dev, "tx complete\n");
-	skb = tx->skb;
-	tx->skb = NULL;
-	ieee802154_xmit_complete(hw, skb, false);
-}
-
-/**
- * dw1000_xmit_async() - Start packet transmission
- *
- * @hw:			IEEE 802.15.4 device
- * @skb:		Socket buffer
- * @return:		0 on success or -errno
- */
-static int dw1000_xmit_async(struct ieee802154_hw *hw, struct sk_buff *skb)
-{
-	static const uint8_t txstrt = DW1000_SYS_CTRL0_TXSTRT;
-	struct dw1000 *dw = hw->priv;
-	struct dw1000_xmit *tx = &dw->tx;
-	int rc;
-
-	/* Sanity check */
-	if (tx->skb) {
-		dev_err(dw->dev, "concurrent transmit is not supported\n");
-		rc = -ENOBUFS;
-		goto err_concurrent;
-	}
-
-	/* Initialise transmission */
-	memset(tx, 0, sizeof(*tx));
-	tx->skb = skb;
-	spi_message_init_no_memset(&tx->msg);
-	tx->msg.complete = dw1000_xmit_complete;
-	tx->msg.context = hw;
-
-	/* Construct data buffer transfer */
-	dw1000_init_write(&tx->msg, &tx->tx_buffer, DW1000_TX_BUFFER, 0,
-			  skb->data, skb->len);
-
-	/* Construct frame control transfer */
-	tx->len = DW1000_TX_FCTRL0_TFLEN(skb->len);
-	dw1000_init_write(&tx->msg, &tx->tx_fctrl, DW1000_TX_FCTRL,
-			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
-
-	/* Construct doorbell transfer */
-	dw1000_init_write(&tx->msg, &tx->sys_ctrl, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL0, &txstrt, sizeof(txstrt));
-
-	/* Submit transmission */
-	if ((rc = spi_async(dw->spi, &tx->msg)) != 0)
-		goto err_spi;
-
-	return 0;
-
- err_spi:
-	tx->skb = NULL;
- err_concurrent:
-	return rc;
 }
 
 static int dw1000_ed(struct ieee802154_hw *hw, u8 *level)
@@ -1562,6 +1646,32 @@ static int dw1000_init(struct dw1000 *dw)
 }
 
 /**
+ * dw1000_prepare() - Prepare predefined transfers
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_prepare(struct dw1000 *dw)
+{
+	static const uint8_t txstrt = DW1000_SYS_CTRL0_TXSTRT;
+	struct dw1000_xmit *tx = &dw->tx;
+
+	/* Prepare transmission */
+	memset(tx, 0, sizeof(*tx));
+	spi_message_init_no_memset(&tx->msg);
+	tx->msg.complete = dw1000_xmit_submit_complete;
+	tx->msg.context = dw;
+	dw1000_init_write(&tx->msg, &tx->tx_buffer, DW1000_TX_BUFFER, 0,
+			  NULL, 0);
+	dw1000_init_write(&tx->msg, &tx->tx_fctrl, DW1000_TX_FCTRL,
+			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
+	dw1000_init_write(&tx->msg, &tx->sys_ctrl, DW1000_SYS_CTRL,
+			  DW1000_SYS_CTRL0, &txstrt, sizeof(txstrt));
+
+	return 0;
+}
+
+/**
  * dw1000_probe() - Create device
  *
  * @spi:		SPI device
@@ -1582,12 +1692,14 @@ static int dw1000_probe(struct spi_device *spi)
 	dw = hw->priv;
 	dw->spi = spi;
 	dw->dev = &spi->dev;
+	dw->hw = hw;
 	dw->phy = hw->phy;
 	dw->channel = DW1000_CHANNEL_DEFAULT;
 	dw->pcode = 0;
 	dw->prf = DW1000_PRF_64M;
 	dw->rate = DW1000_RATE_6800K;
 	dw->smart_power = true;
+	INIT_WORK(&dw->irq_work, dw1000_irq_worker);
 	hw->parent = &spi->dev;
 
 	/* Report capabilities */
@@ -1616,9 +1728,25 @@ static int dw1000_probe(struct spi_device *spi)
 		goto err_init;
 	}
 
+	/* Prepare predefined transfers */
+	if ((rc = dw1000_prepare(dw)) != 0) {
+		dev_err(dw->dev, "preparation failed: %d\n", rc);
+		goto err_prepare;
+	}
+
 	/* Add attribute group */
-	if ((rc = sysfs_create_group(&dw->dev->kobj, &dw1000_attr_group)) != 0)
+	if ((rc = sysfs_create_group(&dw->dev->kobj, &dw1000_attr_group)) != 0){
+		dev_err(dw->dev, "could not create attributes: %d\n", rc);
 		goto err_create_group;
+	}
+
+	/* Hook interrupt */
+	if ((rc = devm_request_irq(dw->dev, spi->irq, dw1000_isr, 0,
+				   dev_name(dw->dev), dw)) != 0) {
+		dev_err(dw->dev, "could not request IRQ %d: %d\n",
+			spi->irq, rc);
+		goto err_request_irq;
+	}
 
 	/* Register IEEE 802.15.4 device */
 	if ((rc = ieee802154_register_hw(hw)) != 0) {
@@ -1631,8 +1759,10 @@ static int dw1000_probe(struct spi_device *spi)
 
 	ieee802154_unregister_hw(hw);
  err_register_hw:
+ err_request_irq:
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
  err_create_group:
+ err_prepare:
  err_init:
  err_reset:
  err_regmap_init:

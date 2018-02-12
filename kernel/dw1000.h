@@ -96,7 +96,7 @@ struct dw1000_spi_transfers {
 #define DW1000_SYS_MASK		0x0e
 #define DW1000_SYS_MASK_LEN	4
 #define DW1000_SYS_STATUS	0x0f
-#define DW1000_SYS_STATUS_LEN	5
+#define DW1000_SYS_STATUS_LEN	8
 #define DW1000_RX_FINFO		0x10
 #define DW1000_RX_FINFO_LEN	4
 #define DW1000_RX_BUFFER	0x11
@@ -184,7 +184,7 @@ struct dw1000_dev_id {
 
 /* Transmit frame control register */
 #define DW1000_TX_FCTRL0		0x00
-#define DW1000_TX_FCTRL0_TFLEN(n)		((n) << 0)
+#define DW1000_TX_FCTRL0_TFLEN(n)		(((n) + 2) << 0)
 #define DW1000_TX_FCTRL1		0x01
 #define DW1000_TX_FCTRL1_TXBR(n)		((n) << 5)
 #define DW1000_TX_FCTRL1_TXBR_MASK		DW1000_TX_FCTRL1_TXBR(0x3)
@@ -208,6 +208,9 @@ struct dw1000_dev_id {
 #define DW1000_SYS_CTRL1_RXENAB			0x01
 #define DW1000_SYS_CTRL3		0x03
 #define DW1000_SYS_CTRL3_HRBPT			0x01
+
+/* Interrupt mask and status registers */
+#define DW1000_IRQ_TXFRS			0x00000080
 
 /* Channel control register */
 #define DW1000_CHAN_CTRL_TX_CHAN(n)		((n) << 0)
@@ -386,12 +389,14 @@ struct dw1000_regmap {
 	const struct dw1000_regmap_config *config;
 };
 
-/* Single transmission */
+/* Data transmission */
 struct dw1000_xmit {
 	/* Socket buffer */
 	struct sk_buff *skb;
 	/* Length */
 	uint8_t len;
+	/* SPI message submission has completed */
+	bool submitted;
 	/* SPI message */
 	struct spi_message msg;
 	/* SPI transfers for data buffer */
@@ -408,6 +413,8 @@ struct dw1000 {
 	struct spi_device *spi;
 	/* Generic device */
 	struct device *dev;
+	/* IEEE 802.15.4 device */
+	struct ieee802154_hw *hw;
 	/* WPAN PHY */
 	struct wpan_phy *phy;
 
@@ -462,6 +469,8 @@ struct dw1000 {
 	/* Smart power control enabled */
 	bool smart_power;
 
+	/* Interrupt status worker */
+	struct work_struct irq_work;
 	/* Current transmission */
 	struct dw1000_xmit tx;
 };
