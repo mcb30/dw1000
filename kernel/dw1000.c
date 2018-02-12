@@ -574,7 +574,7 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 		.drx_tune1b = 0x0064,
 		.drx_tune2 = {
 			[DW1000_PRF_16M] = { 0x1d, 0x01, 0x1a, 0x37 },
-			[DW1000_PRF_16M] = { 0x96, 0x02, 0x3b, 0x37 },
+			[DW1000_PRF_64M] = { 0x96, 0x02, 0x3b, 0x37 },
 		},
 		.drx_tune4h = 0x0028,
 	},
@@ -585,7 +585,7 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 		.drx_tune1b = 0x0020,
 		.drx_tune2 = {
 			[DW1000_PRF_16M] = { 0x9a, 0x00, 0x1a, 0x35 },
-			[DW1000_PRF_16M] = { 0x5e, 0x01, 0x3b, 0x35 },
+			[DW1000_PRF_64M] = { 0x5e, 0x01, 0x3b, 0x35 },
 		},
 		.drx_tune4h = 0x0028,
 	},
@@ -596,7 +596,7 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 		.drx_tune1b = 0x0010,
 		.drx_tune2 = {
 			[DW1000_PRF_16M] = { 0x2d, 0x00, 0x1a, 0x31 },
-			[DW1000_PRF_16M] = { 0x6b, 0x00, 0x3b, 0x31 },
+			[DW1000_PRF_64M] = { 0x6b, 0x00, 0x3b, 0x31 },
 		},
 		.drx_tune4h = 0x0010,
 	},
