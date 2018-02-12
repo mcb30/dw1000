@@ -27,7 +27,58 @@
 #include <net/mac802154.h>
 #include "dw1000.h"
 
-static bool dw1000_default_smart_power = true;
+/******************************************************************************
+ *
+ * Enumeration conversions
+ *
+ */
+
+/* Pulse repetition frequency values */
+static const unsigned int dw1000_prfs[] = {
+	[DW1000_PRF_16M] = 16,
+	[DW1000_PRF_64M] = 64,
+};
+
+/* Data rate values */
+static const unsigned int dw1000_rates[] = {
+	[DW1000_RATE_110K] = 110,
+	[DW1000_RATE_850K] = 850,
+	[DW1000_RATE_6800K] = 6800,
+};
+
+/**
+ * Look up pulse repetition frequency
+ *
+ * @prf:		Pulse repetition frequency in MHz
+ * @return:		Pulse repetition frequency enumeration or -errno
+ */
+static int dw1000_prf(unsigned int prf)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(dw1000_prfs); i++) {
+		if (dw1000_prfs[i] && (dw1000_prfs[i] == prf))
+			return i;
+	}
+	return -EINVAL;
+}
+
+/**
+ * Look up data rate
+ *
+ * @rate:		Data rate in kbps
+ * @return:		Data rate enumeration or -errno
+ */
+static int dw1000_rate(unsigned int rate)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(dw1000_rates); i++) {
+		if (dw1000_rates[i] && (dw1000_rates[i] == rate))
+			return i;
+	}
+	return -EINVAL;
+}
 
 /******************************************************************************
  *
@@ -361,26 +412,8 @@ static int dw1000_regmap_init(struct dw1000 *dw)
  *
  */
 
-/* Fixed configurations */
-static const uint8_t dw1000_agc_tune2[4] = { 0x07, 0xa9, 0x02, 0x25 };
-static const uint8_t dw1000_agc_tune3[2] = { 0x35, 0x00 };
-
-/* Pulse repetition frequency configurations */
-static const struct dw1000_prf dw1000_prfs[DW1000_PRF_COUNT] = {
-	[DW1000_PRF_SLOW] = {
-		.mhz = DW1000_PRF_SLOW_MHZ,
-		.chan_ctrl_rxprf = DW1000_CHAN_CTRL_RXPRF_SLOW,
-		.agc_tune1 = { 0x70, 0x88 },
-	},
-	[DW1000_PRF_FAST] = {
-		.mhz = DW1000_PRF_FAST_MHZ,
-		.chan_ctrl_rxprf = DW1000_CHAN_CTRL_RXPRF_FAST,
-		.agc_tune1 = { 0x9b, 0x88 },
-	},
-};
-
 /* Channel configurations */
-static const struct dw1000_channel dw1000_channels[] = {
+static const struct dw1000_channel_config dw1000_channel_configs[] = {
 	[1] = {
 		.rf_txctrl = { 0x40, 0x5c, 0x00 },
 		.rf_rxctrlh = 0xd8,
@@ -388,13 +421,13 @@ static const struct dw1000_channel dw1000_channels[] = {
 		.fs_pllcfg = { 0x07, 0x04, 0x00, 0x09 },
 		.fs_plltune = 0x1e,
 		.tx_power = {
-			[DW1000_PRF_SLOW] = { 0x75, 0x55, 0x35, 0x15 },
-			[DW1000_PRF_FAST] = { 0x67, 0x47, 0x27, 0x07 },
+			[DW1000_PRF_16M] = { 0x75, 0x55, 0x35, 0x15 },
+			[DW1000_PRF_64M] = { 0x67, 0x47, 0x27, 0x07 },
 		},
-		.preambles = {
-			[DW1000_PRF_SLOW] = (BIT(1) | BIT(2)),
-			[DW1000_PRF_FAST] = (BIT(9) | BIT(10) | BIT(11) |
-					     BIT(12)),
+		.pcodes = {
+			[DW1000_PRF_16M] = (BIT(1) | BIT(2)),
+			[DW1000_PRF_64M] = (BIT(9) | BIT(10) | BIT(11) |
+					    BIT(12)),
 		},
 	},
 	[2] = {
@@ -404,13 +437,13 @@ static const struct dw1000_channel dw1000_channels[] = {
 		.fs_pllcfg = { 0x08, 0x05, 0x40, 0x08 },
 		.fs_plltune = 0x26,
 		.tx_power = {
-			[DW1000_PRF_SLOW] = { 0x75, 0x55, 0x35, 0x15 },
-			[DW1000_PRF_FAST] = { 0x67, 0x47, 0x27, 0x07 },
+			[DW1000_PRF_16M] = { 0x75, 0x55, 0x35, 0x15 },
+			[DW1000_PRF_64M] = { 0x67, 0x47, 0x27, 0x07 },
 		},
-		.preambles = {
-			[DW1000_PRF_SLOW] = (BIT(3) | BIT(4)),
-			[DW1000_PRF_FAST] = (BIT(9) | BIT(10) | BIT(11) |
-					     BIT(12)),
+		.pcodes = {
+			[DW1000_PRF_16M] = (BIT(3) | BIT(4)),
+			[DW1000_PRF_64M] = (BIT(9) | BIT(10) | BIT(11) |
+					    BIT(12)),
 		},
 	},
 	[3] = {
@@ -420,13 +453,13 @@ static const struct dw1000_channel dw1000_channels[] = {
 		.fs_pllcfg = { 0x09, 0x10, 0x40, 0x08 },
 		.fs_plltune = 0x56,
 		.tx_power = {
-			[DW1000_PRF_SLOW] = { 0x6f, 0x4f, 0x2f, 0x0f },
-			[DW1000_PRF_FAST] = { 0x8b, 0x6b, 0x4b, 0x2b },
+			[DW1000_PRF_16M] = { 0x6f, 0x4f, 0x2f, 0x0f },
+			[DW1000_PRF_64M] = { 0x8b, 0x6b, 0x4b, 0x2b },
 		},
-		.preambles = {
-			[DW1000_PRF_SLOW] = (BIT(5) | BIT(6)),
-			[DW1000_PRF_FAST] = (BIT(9) | BIT(10) | BIT(11) |
-					     BIT(12)),
+		.pcodes = {
+			[DW1000_PRF_16M] = (BIT(5) | BIT(6)),
+			[DW1000_PRF_64M] = (BIT(9) | BIT(10) | BIT(11) |
+					    BIT(12)),
 		},
 	},
 	[4] = {
@@ -436,13 +469,13 @@ static const struct dw1000_channel dw1000_channels[] = {
 		.fs_pllcfg = { 0x08, 0x05, 0x40, 0x08 },
 		.fs_plltune = 0x26,
 		.tx_power = {
-			[DW1000_PRF_SLOW] = { 0x5f, 0x3f, 0x1f, 0x1f },
-			[DW1000_PRF_FAST] = { 0x9a, 0x7a, 0x5a, 0x3a },
+			[DW1000_PRF_16M] = { 0x5f, 0x3f, 0x1f, 0x1f },
+			[DW1000_PRF_64M] = { 0x9a, 0x7a, 0x5a, 0x3a },
 		},
-		.preambles = {
-			[DW1000_PRF_SLOW] = (BIT(7) | BIT(8)),
-			[DW1000_PRF_FAST] = (BIT(17) | BIT(18) | BIT(19) |
-					     BIT(20)),
+		.pcodes = {
+			[DW1000_PRF_16M] = (BIT(7) | BIT(8)),
+			[DW1000_PRF_64M] = (BIT(17) | BIT(18) | BIT(19) |
+					    BIT(20)),
 		},
 	},
 	[5] = {
@@ -452,13 +485,13 @@ static const struct dw1000_channel dw1000_channels[] = {
 		.fs_pllcfg = { 0x1d, 0x04, 0x00, 0x08 },
 		.fs_plltune = 0xbe,
 		.tx_power = {
-			[DW1000_PRF_SLOW] = { 0x48, 0x28, 0x08, 0x0e },
-			[DW1000_PRF_FAST] = { 0x85, 0x65, 0x45, 0x25 },
+			[DW1000_PRF_16M] = { 0x48, 0x28, 0x08, 0x0e },
+			[DW1000_PRF_64M] = { 0x85, 0x65, 0x45, 0x25 },
 		},
-		.preambles = {
-			[DW1000_PRF_SLOW] = (BIT(5) | BIT(6)),
-			[DW1000_PRF_FAST] = (BIT(9) | BIT(10) | BIT(11) |
-					     BIT(12)),
+		.pcodes = {
+			[DW1000_PRF_16M] = (BIT(5) | BIT(6)),
+			[DW1000_PRF_64M] = (BIT(9) | BIT(10) | BIT(11) |
+					    BIT(12)),
 		},
 	},
 	[7] = {
@@ -468,118 +501,191 @@ static const struct dw1000_channel dw1000_channels[] = {
 		.fs_pllcfg = { 0x1d, 0x04, 0x00, 0x08 },
 		.fs_plltune = 0xbe,
 		.tx_power = {
-			[DW1000_PRF_SLOW] = { 0x92, 0x72, 0x52, 0x32 },
-			[DW1000_PRF_FAST] = { 0xd1, 0xb1, 0x71, 0x51 },
+			[DW1000_PRF_16M] = { 0x92, 0x72, 0x52, 0x32 },
+			[DW1000_PRF_64M] = { 0xd1, 0xb1, 0x71, 0x51 },
 		},
-		.preambles = {
-			[DW1000_PRF_SLOW] = (BIT(7) | BIT(8)),
-			[DW1000_PRF_FAST] = (BIT(17) | BIT(18) | BIT(19) |
-					     BIT(20)),
+		.pcodes = {
+			[DW1000_PRF_16M] = (BIT(7) | BIT(8)),
+			[DW1000_PRF_64M] = (BIT(17) | BIT(18) | BIT(19) |
+					    BIT(20)),
 		},
 	},
 };
 
+/* Pulse repetition frequency configurations */
+static const struct dw1000_prf_config dw1000_prf_configs[DW1000_PRF_COUNT] = {
+	[DW1000_PRF_16M] = {
+		.agc_tune1 = { 0x70, 0x88 },
+	},
+	[DW1000_PRF_64M] = {
+		.agc_tune1 = { 0x9b, 0x88 },
+	},
+};
+
+/* Fixed configurations */
+static const struct dw1000_fixed_config dw1000_fixed_config = {
+	.agc_tune2 = { 0x07, 0xa9, 0x02, 0x25 },
+	.agc_tune3 = { 0x35, 0x00 },
+};
+
+/* Radio reconfiguration change bitmasks */
+enum dw1000_configuration_change {
+	DW1000_CONFIGURE_FIXED		= BIT(0),
+	DW1000_CONFIGURE_CHANNEL	= BIT(1),
+	DW1000_CONFIGURE_PCODE		= BIT(2),
+	DW1000_CONFIGURE_PRF		= BIT(3),
+	DW1000_CONFIGURE_RATE		= BIT(4),
+	DW1000_CONFIGURE_SMART_POWER	= BIT(5),
+};
+
 /**
- * dw1000_preamble() - Calculate preamble code
+ * dw1000_pcode() - Calculate preamble code
  *
  * @dw:			DW1000 device
  * @return:		Preamble code
  */
-static unsigned int dw1000_preamble(struct dw1000 *dw)
+static unsigned int dw1000_pcode(struct dw1000 *dw)
 {
-	unsigned long supported;
+	unsigned long pcodes;
 
-	/* Use explicitly set preamble code if configured and supported */
-	supported = dw1000_channels[dw->channel].preambles[dw->prf];
-	if (BIT(dw->preamble) & supported)
-		return dw->preamble;
+	/* Use explicitly set preamble code if configured and pcodes */
+	pcodes = dw1000_channel_configs[dw->channel].pcodes[dw->prf];
+	if (BIT(dw->pcode) & pcodes)
+		return dw->pcode;
 
-	/* Otherwise, use first supported preamble code */
-	return (ffs(supported) - 1);
+	/* Otherwise, use first pcodes preamble code */
+	return (ffs(pcodes) - 1);
 }
 
 /**
- * dw1000_configure_power() - Configure transmit power
+ * dw1000_reconfigure() - Reconfigure radio parameters
  *
  * @dw:			DW1000 device
+ * @changed:		Changed parameter bitmask
  * @return:		0 on success or -errno
  */
-static int dw1000_configure_power(struct dw1000 *dw)
+static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 {
-	const struct dw1000_channel *channel = &dw1000_channels[dw->channel];
-	uint8_t tx_power[sizeof(channel->tx_power[0])];
-	uint32_t sys_cfg;
+	const struct dw1000_channel_config *channel_cfg;
+	const struct dw1000_prf_config *prf_cfg;
+	const struct dw1000_fixed_config *fixed_cfg;
+	uint8_t tx_power[sizeof(channel_cfg->tx_power[0])];
+	unsigned int channel;
+	unsigned int pcode;
+	enum dw1000_prf prf;
+	enum dw1000_rate rate;
+	bool smart_power;
 	unsigned int i;
+	int mask;
+	int value;
 	int rc;
 
-	/* Construct transmit power register value */
-	memcpy(tx_power, &channel->tx_power[dw->prf], sizeof(tx_power));
-	if (!dw->smart_power) {
-		for (i = 1; i < sizeof(tx_power); i++)
-			tx_power[i] = tx_power[0];
+	/* Look up current configurations */
+	channel = dw->channel;
+	pcode = dw1000_pcode(dw);
+	prf = dw->prf;
+	rate = dw->rate;
+	smart_power = dw->smart_power;
+	channel_cfg = &dw1000_channel_configs[channel];
+	prf_cfg = &dw1000_prf_configs[prf];
+	fixed_cfg = &dw1000_fixed_config;
+
+	/* SYS_CFG register */
+	if (changed & (DW1000_CONFIGURE_RATE | DW1000_CONFIGURE_SMART_POWER)) {
+		mask = (DW1000_SYS_CFG_DIS_STXP | DW1000_SYS_CFG_RXM110K);
+		value = ((smart_power ? 0 : DW1000_SYS_CFG_DIS_STXP) |
+			 ((rate == DW1000_RATE_110K) ?
+			  DW1000_SYS_CFG_RXM110K : 0));
+		if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, mask,
+					     value)) != 0)
+			return rc;
 	}
 
-	/* Set transmit power */
-	if ((rc = regmap_raw_write(dw->tx_power.regs, 0, tx_power,
-				   sizeof(tx_power))) != 0)
-		return rc;
+	/* TX_POWER register */
+	if (changed & (DW1000_CONFIGURE_CHANNEL | DW1000_CONFIGURE_PRF |
+		       DW1000_CONFIGURE_SMART_POWER)) {
+		memcpy(tx_power, &channel_cfg->tx_power[prf], sizeof(tx_power));
+		if (!smart_power) {
+			for (i = 1; i < sizeof(tx_power); i++)
+				tx_power[i] = tx_power[0];
+		}
+		if ((rc = regmap_raw_write(dw->tx_power.regs, 0, tx_power,
+					   sizeof(tx_power))) != 0)
+			return rc;
+	}
 
-	/* Enable/disable smart transmit power control */
-	sys_cfg = (dw->smart_power ? 0 : DW1000_SYS_CFG_DIS_STXP);
-	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0,
-				     DW1000_SYS_CFG_DIS_STXP, sys_cfg)) != 0)
-		return rc;
+	/* CHAN_CTRL register */
+	if (changed & (DW1000_CONFIGURE_CHANNEL | DW1000_CONFIGURE_PCODE |
+		       DW1000_CONFIGURE_PRF)) {
+		mask = (DW1000_CHAN_CTRL_TX_CHAN_MASK |
+			DW1000_CHAN_CTRL_RX_CHAN_MASK |
+			DW1000_CHAN_CTRL_RXPRF_MASK |
+			DW1000_CHAN_CTRL_TX_PCODE_MASK |
+			DW1000_CHAN_CTRL_RX_PCODE_MASK);
+		value = (DW1000_CHAN_CTRL_TX_CHAN(channel) |
+			 DW1000_CHAN_CTRL_RX_CHAN(channel) |
+			 DW1000_CHAN_CTRL_RXPRF(prf) |
+			 DW1000_CHAN_CTRL_TX_PCODE(pcode) |
+			 DW1000_CHAN_CTRL_RX_PCODE(pcode));
+		if ((rc = regmap_update_bits(dw->chan_ctrl.regs, 0, mask,
+					     value)) != 0)
+			return rc;
+	}
 
-	return 0;
-}
+	/* AGC_CTRL registers */
+	if (changed & DW1000_CONFIGURE_PRF) {
+		if ((rc = regmap_raw_write(dw->agc_ctrl.regs,
+					   DW1000_AGC_CTRL_TUNE1,
+					   prf_cfg->agc_tune1,
+					   sizeof(prf_cfg->agc_tune1))) != 0)
+			return rc;
+	}
+	if (changed & DW1000_CONFIGURE_FIXED) {
+		if ((rc = regmap_raw_write(dw->agc_ctrl.regs,
+					   DW1000_AGC_CTRL_TUNE2,
+					   fixed_cfg->agc_tune2,
+					   sizeof(fixed_cfg->agc_tune2))) != 0)
+			return rc;
+		if ((rc = regmap_raw_write(dw->agc_ctrl.regs,
+					   DW1000_AGC_CTRL_TUNE3,
+					   fixed_cfg->agc_tune3,
+					   sizeof(fixed_cfg->agc_tune3))) != 0)
+			return rc;
+	}
 
-/**
- * dw1000_configure_preamble() - Configure preamble code
- *
- * @dw:			DW1000 device
- * @return:		0 on success or -errno
- */
-static int dw1000_configure_preamble(struct dw1000 *dw)
-{
-	unsigned int preamble;
-	uint32_t chan_ctrl;
-	int rc;
+	/* RF_CONF registers */
+	if (changed & DW1000_CONFIGURE_CHANNEL) {
+		if ((rc = regmap_raw_write(dw->rf_conf.regs,
+					   DW1000_RF_CONF_RF_TXCTRL,
+					   channel_cfg->rf_txctrl,
+					   sizeof(channel_cfg->rf_txctrl))) !=0)
+			return rc;
+		if ((rc = regmap_write(dw->rf_conf.regs,
+				       DW1000_RF_CONF_RF_RXCTRLH,
+				       channel_cfg->rf_rxctrlh)) != 0)
+			return rc;
+	}
 
-	/* Set preamble code */
-	preamble = dw1000_preamble(dw);
-	chan_ctrl = (DW1000_CHAN_CTRL_TX_PCODE(preamble) |
-		     DW1000_CHAN_CTRL_RX_PCODE(preamble));
-	if ((rc = regmap_update_bits(dw->chan_ctrl.regs, 0,
-				     (DW1000_CHAN_CTRL_TX_PCODE_MASK |
-				      DW1000_CHAN_CTRL_RX_PCODE_MASK),
-				     chan_ctrl)) != 0)
-		return rc;
+	/* TX_CAL registers */
+	if (changed & DW1000_CONFIGURE_CHANNEL) {
+		if ((rc = regmap_write(dw->tx_cal.regs,
+				       DW1000_TX_CAL_TC_PGDELAY,
+				       channel_cfg->tc_pgdelay)) != 0)
+			return rc;
+	}
 
-	return 0;
-}
-
-/**
- * dw1000_configure_prf() - Configure pulse repetition frequency
- *
- * @dw:			DW1000 device
- * @return:		0 on success or -errno
- */
-static int dw1000_configure_prf(struct dw1000 *dw)
-{
-	const struct dw1000_prf *prf = &dw1000_prfs[dw->prf];
-	int rc;
-
-	/* Set receive pulse repetition frequency */
-	if ((rc = regmap_update_bits(dw->chan_ctrl.regs, 0,
-				     DW1000_CHAN_CTRL_RXPRF_MASK,
-				     prf->chan_ctrl_rxprf)) != 0)
-		return rc;
-
-	/* Update automatic gain control tuning registers */
-	if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_CTRL_TUNE1,
-				   prf->agc_tune1,
-				   sizeof(prf->agc_tune1))) != 0)
-		return rc;
+	/* FS_CTRL registers */
+	if (changed & DW1000_CONFIGURE_CHANNEL) {
+		if ((rc = regmap_raw_write(dw->fs_ctrl.regs,
+					   DW1000_FS_CTRL_FS_PLLCFG,
+					   channel_cfg->fs_pllcfg,
+					   sizeof(channel_cfg->fs_pllcfg))) !=0)
+			return rc;
+		if ((rc = regmap_write(dw->fs_ctrl.regs,
+				       DW1000_FS_CTRL_FS_PLLTUNE,
+				       channel_cfg->fs_plltune)) != 0)
+			return rc;
+	}
 
 	return 0;
 }
@@ -588,193 +694,10 @@ static int dw1000_configure_prf(struct dw1000 *dw)
  * dw1000_configure_channel() - Configure radio channel
  *
  * @dw:			DW1000 device
- * @return:		0 on success or -errno
- */
-static int dw1000_configure_channel(struct dw1000 *dw)
-{
-	const struct dw1000_channel *channel = &dw1000_channels[dw->channel];
-	unsigned int chan = dw->channel;
-	int rc;
-
-	/* Set magic register values */
-	if ((rc = regmap_raw_write(dw->rf_conf.regs, DW1000_RF_CONF_RF_TXCTRL,
-				   channel->rf_txctrl,
-				   sizeof(channel->rf_txctrl))) != 0)
-		return rc;
-	if ((rc = regmap_write(dw->rf_conf.regs, DW1000_RF_CONF_RF_RXCTRLH,
-			       channel->rf_rxctrlh)) != 0)
-		return rc;
-	if ((rc = regmap_write(dw->tx_cal.regs, DW1000_TX_CAL_TC_PGDELAY,
-			       channel->tc_pgdelay)) != 0)
-		return rc;
-	if ((rc = regmap_raw_write(dw->fs_ctrl.regs, DW1000_FS_CTRL_FS_PLLCFG,
-				   channel->fs_pllcfg,
-				   sizeof(channel->fs_pllcfg))) != 0)
-		return rc;
-	if ((rc = regmap_write(dw->fs_ctrl.regs, DW1000_FS_CTRL_FS_PLLTUNE,
-			       channel->fs_plltune)) != 0)
-		return rc;
-
-	/* Set channel numbers */
-	if ((rc = regmap_update_bits(dw->chan_ctrl.regs, 0,
-				     (DW1000_CHAN_CTRL_TX_CHAN_MASK |
-				      DW1000_CHAN_CTRL_RX_CHAN_MASK),
-				     (DW1000_CHAN_CTRL_TX_CHAN(chan) |
-				      DW1000_CHAN_CTRL_RX_CHAN(chan)))) != 0)
-		return rc;
-
-	return 0;
-}
-
-/**
- * dw1000_configure_fixed() - Configure fixed radio parameters
- *
- * @dw:			DW1000 device
- * @return:		0 on success or -errno
- */
-static int dw1000_configure_fixed(struct dw1000 *dw)
-{
-	int rc;
-
-	/* Tune automatic gain control */
-	if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_CTRL_TUNE2,
-				   dw1000_agc_tune2,
-				   sizeof(dw1000_agc_tune2))) != 0)
-		return rc;
-	if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_CTRL_TUNE3,
-				   dw1000_agc_tune3,
-				   sizeof(dw1000_agc_tune3))) != 0)
-		return rc;
-
-	return 0;
-}
-
-/**
- * dw1000_configure() - Configure all radio parameters
- *
- * @dw:			DW1000 device
- * @return:		0 on success or -errno
- */
-static int dw1000_configure(struct dw1000 *dw)
-{
-	int rc;
-
-	/* Configure fixed parameters */
-	if ((rc = dw1000_configure_fixed(dw)) != 0)
-		return rc;
-
-	/* Configure channel */
-	if ((rc = dw1000_configure_channel(dw)) != 0)
-		return rc;
-
-	/* Configure pulse repetition frequency */
-	if ((rc = dw1000_configure_prf(dw)) != 0)
-		return rc;
-
-	/* Configure preamble */
-	if ((rc = dw1000_configure_preamble(dw)) != 0)
-		return rc;
-
-	/* Configure transmit power */
-	if ((rc = dw1000_configure_power(dw)) != 0)
-		return rc;
-
-	return 0;
-}
-
-/**
- * dw1000_change_smart_power() - Change use of smart power control
- *
- * @dw:			DW1000 device
- * @smart_power:	Smart power control enabled
- * @return:		0 on success or -errno
- */
-static int dw1000_change_smart_power(struct dw1000 *dw, bool smart_power)
-{
-	int rc;
-
-	/* Record smart power control */
-	dw->smart_power = smart_power;
-
-	/* Reconfigure transmit power */
-	if ((rc = dw1000_configure_power(dw)) != 0)
-		return rc;
-
-	dev_dbg(dw->dev, "smart power control %sabled\n",
-		(smart_power ? "en" : "dis"));
-	return 0;
-}
-
-/**
- * dw1000_change_preamble() - Change preamble code
- *
- * @dw:			DW1000 device
- * @preamble:		Preamble code (or 0 for automatic selection)
- * @return:		0 on success or -errno
- */
-static int dw1000_change_preamble(struct dw1000 *dw, unsigned int preamble)
-{
-	unsigned long supported;
-	int rc;
-
-	/* Check that preamble code is valid */
-	if (preamble) {
-		supported = dw1000_channels[dw->channel].preambles[dw->prf];
-		if (!(BIT(preamble) & supported))
-			return -EINVAL;
-	}
-
-	/* Record preamble code */
-	dw->preamble = preamble;
-
-	/* Reconfigure preamble code */
-	if ((rc = dw1000_configure_preamble(dw)) != 0)
-		return rc;
-
-	dev_dbg(dw->dev, "set preamble code %d (requested %d)\n",
-		dw1000_preamble(dw), preamble);
-	return 0;
-}
-
-/**
- * dw1000_change_prf() - Change pulse repetition frequency
- *
- * @dw:			DW1000 device
- * @prf:		Pulse repetition frequency
- * @return:		0 on success or -errno
- */
-static int dw1000_change_prf(struct dw1000 *dw, enum dw1000_prf_code prf)
-{
-	int rc;
-
-	/* Record pulse repetition frequency */
-	dw->prf = prf;
-
-	/* Reconfigure pulse repetition frequency */
-	if ((rc = dw1000_configure_prf(dw)) != 0)
-		return rc;
-
-	/* Reconfigure preamble code */
-	if ((rc = dw1000_configure_preamble(dw)) != 0)
-		return rc;
-
-	/* Reconfigure transmit power */
-	if ((rc = dw1000_configure_power(dw)) != 0)
-		return rc;
-
-	dev_dbg(dw->dev, "set pulse repetition frequency %dMHz\n",
-		dw1000_prfs[dw->prf].mhz);
-	return 0;
-}
-
-/**
- * dw1000_change_channel() - Change radio channel
- *
- * @dw:			DW1000 device
  * @channel:		Channel number
  * @return:		0 on success or -errno
  */
-static int dw1000_change_channel(struct dw1000 *dw, unsigned int channel)
+static int dw1000_configure_channel(struct dw1000 *dw, unsigned int channel)
 {
 	int rc;
 
@@ -786,18 +709,109 @@ static int dw1000_change_channel(struct dw1000 *dw, unsigned int channel)
 	dw->channel = channel;
 
 	/* Reconfigure channel */
-	if ((rc = dw1000_configure_channel(dw)) != 0)
-		return rc;
-
-	/* Reconfigure preamble code */
-	if ((rc = dw1000_configure_preamble(dw)) != 0)
-		return rc;
-
-	/* Reconfigure transmit power */
-	if ((rc = dw1000_configure_power(dw)) != 0)
+	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_CHANNEL)) != 0)
 		return rc;
 
 	dev_dbg(dw->dev, "set channel %d\n", channel);
+	return 0;
+}
+
+/**
+ * dw1000_configure_pcode() - Configure preamble code
+ *
+ * @dw:			DW1000 device
+ * @pcode:		Preamble code (or 0 for automatic selection)
+ * @return:		0 on success or -errno
+ */
+static int dw1000_configure_pcode(struct dw1000 *dw, unsigned int pcode)
+{
+	unsigned long pcodes;
+	int rc;
+
+	/* Check that preamble code is valid */
+	if (pcode) {
+		pcodes = dw1000_channel_configs[dw->channel].pcodes[dw->prf];
+		if (!(BIT(pcode) & pcodes))
+			return -EINVAL;
+	}
+
+	/* Record preamble code */
+	dw->pcode = pcode;
+
+	/* Reconfigure preamble code */
+	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_PCODE)) != 0)
+		return rc;
+
+	dev_dbg(dw->dev, "set preamble code %d (requested %d)\n",
+		dw1000_pcode(dw), pcode);
+	return 0;
+}
+
+/**
+ * dw1000_configure_prf() - Configure pulse repetition frequency
+ *
+ * @dw:			DW1000 device
+ * @prf:		Pulse repetition frequency
+ * @return:		0 on success or -errno
+ */
+static int dw1000_configure_prf(struct dw1000 *dw, enum dw1000_prf prf)
+{
+	int rc;
+
+	/* Record pulse repetition frequency */
+	dw->prf = prf;
+
+	/* Reconfigure pulse repetition frequency */
+	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_PRF)) != 0)
+		return rc;
+
+	dev_dbg(dw->dev, "set pulse repetition frequency %dMHz\n",
+		dw1000_prfs[dw->prf]);
+	return 0;
+}
+
+/**
+ * dw1000_configure_rate() - Configure data rate
+ *
+ * @dw:			DW1000 device
+ * @rate:		Data rate
+ * @return:		0 on success or -errno
+ */
+static int dw1000_configure_rate(struct dw1000 *dw, enum dw1000_rate rate)
+{
+	int rc;
+
+	/* Record data rate */
+	dw->rate = rate;
+
+	/* Reconfigure data rate */
+	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_RATE)) != 0)
+		return rc;
+
+	dev_dbg(dw->dev, "set data rate %dkbps\n", dw1000_rates[dw->rate]);
+	return 0;
+}
+
+/**
+ * dw1000_configure_smart_power() - Configure use of smart power control
+ *
+ * @dw:			DW1000 device
+ * @smart_power:	Smart power control enabled
+ * @return:		0 on success or -errno
+ */
+static int dw1000_configure_smart_power(struct dw1000 *dw, bool smart_power)
+{
+	int rc;
+
+	/* Record smart power control */
+	dw->smart_power = smart_power;
+
+	/* Reconfigure transmit power */
+	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_SMART_POWER)) != 0)
+		return rc;
+
+	dev_dbg(dw->dev, "set smart power control %s\n",
+		(smart_power ? "on" : "off"));
 	return 0;
 }
 
@@ -864,8 +878,8 @@ static int dw1000_set_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
 	if (page != DW1000_CHANNEL_PAGE)
 		return -EINVAL;
 
-	/* Change radio channel */
-	if ((rc = dw1000_change_channel(dw, channel)) != 0)
+	/* Configure radio channel */
+	if ((rc = dw1000_configure_channel(dw, channel)) != 0)
 		return rc;
 
 	return 0;
@@ -1000,6 +1014,84 @@ static const struct ieee802154_ops dw1000_ops = {
 #define DW1000_ATTR_RW(_name, _mode) \
 	DEVICE_ATTR(_name, _mode, dw1000_show_##_name, dw1000_store_##_name)
 
+/* Preamble code */
+static ssize_t dw1000_show_pcode(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "%d\n", dw1000_pcode(dw));
+}
+static ssize_t dw1000_store_pcode(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	int pcode;
+	int rc;
+
+	if ((rc = kstrtoint(buf, 0, &pcode)) != 0)
+		return rc;
+	if ((rc = dw1000_configure_pcode(dw, pcode)) != 0)
+		return rc;
+	return count;
+}
+static DW1000_ATTR_RW(pcode, 0644);
+
+/* Pulse repetition frequency */
+static ssize_t dw1000_show_prf(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "%d\n", dw1000_prfs[dw->prf]);
+}
+static ssize_t dw1000_store_prf(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	int raw;
+	int prf;
+	int rc;
+
+	if ((rc = kstrtoint(buf, 0, &raw)) != 0)
+		return rc;
+	if ((prf = dw1000_prf(raw)) < 0)
+		return prf;
+	if ((rc = dw1000_configure_prf(dw, prf)) != 0)
+		return rc;
+	return count;
+}
+static DW1000_ATTR_RW(prf, 0644);
+
+/* Data rate */
+static ssize_t dw1000_show_rate(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "%d\n", dw1000_rates[dw->rate]);
+}
+static ssize_t dw1000_store_rate(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	int raw;
+	int rate;
+	int rc;
+
+	if ((rc = kstrtoint(buf, 0, &raw)) != 0)
+		return rc;
+	if ((rate = dw1000_rate(raw)) < 0)
+		return rate;
+	if ((rc = dw1000_configure_rate(dw, rate)) != 0)
+		return rc;
+	return count;
+}
+static DW1000_ATTR_RW(rate, 0644);
+
 /* Smart power control */
 static ssize_t dw1000_show_smart_power(struct device *dev,
 				       struct device_attribute *attr, char *buf)
@@ -1018,76 +1110,18 @@ static ssize_t dw1000_store_smart_power(struct device *dev,
 
 	if (strtobool(buf, &smart_power) < 0)
 		return -EINVAL;
-	if ((rc = dw1000_change_smart_power(dw, smart_power)) != 0)
+	if ((rc = dw1000_configure_smart_power(dw, smart_power)) != 0)
 		return rc;
 	return count;
 }
 static DW1000_ATTR_RW(smart_power, 0644);
 
-/* Pulse repetition frequency */
-static ssize_t dw1000_show_prf(struct device *dev,
-			       struct device_attribute *attr, char *buf)
-{
-	struct dw1000 *dw = to_dw1000(dev);
-
-	return sprintf(buf, "%d\n", dw1000_prfs[dw->prf].mhz);
-}
-static ssize_t dw1000_store_prf(struct device *dev,
-				struct device_attribute *attr,
-				const char *buf, size_t count)
-{
-	struct dw1000 *dw = to_dw1000(dev);
-	enum dw1000_prf_code prf;
-	int value;
-	int rc;
-
-	if ((rc = kstrtoint(buf, 0, &value)) != 0)
-		return rc;
-	switch (value) {
-	case DW1000_PRF_SLOW_MHZ:
-		prf = DW1000_PRF_SLOW;
-		break;
-	case DW1000_PRF_FAST_MHZ:
-		prf = DW1000_PRF_FAST;
-		break;
-	default:
-		return -EINVAL;
-	}
-	if ((rc = dw1000_change_prf(dw, prf)) != 0)
-		return rc;
-	return count;
-}
-static DW1000_ATTR_RW(prf, 0644);
-
-/* Preamble code */
-static ssize_t dw1000_show_preamble(struct device *dev,
-				    struct device_attribute *attr, char *buf)
-{
-	struct dw1000 *dw = to_dw1000(dev);
-
-	return sprintf(buf, "%d\n", dw1000_preamble(dw));
-}
-static ssize_t dw1000_store_preamble(struct device *dev,
-				     struct device_attribute *attr,
-				     const char *buf, size_t count)
-{
-	struct dw1000 *dw = to_dw1000(dev);
-	int preamble;
-	int rc;
-
-	if ((rc = kstrtoint(buf, 0, &preamble)) != 0)
-		return rc;
-	if ((rc = dw1000_change_preamble(dw, preamble)) != 0)
-		return rc;
-	return count;
-}
-static DW1000_ATTR_RW(preamble, 0644);
-
 /* Attribute list */
 static struct attribute *dw1000_attrs[] = {
-	&dev_attr_smart_power.attr,
+	&dev_attr_pcode.attr,
 	&dev_attr_prf.attr,
-	&dev_attr_preamble.attr,
+	&dev_attr_rate.attr,
+	&dev_attr_smart_power.attr,
 	NULL
 };
 
@@ -1287,7 +1321,7 @@ static int dw1000_init(struct dw1000 *dw)
 		return rc;
 
 	/* Configure radio */
-	if ((rc = dw1000_configure(dw)) != 0)
+	if ((rc = dw1000_reconfigure(dw, -1U)) != 0)
 		return rc;
 
 	return 0;
@@ -1315,8 +1349,10 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->spi = spi;
 	dw->dev = &spi->dev;
 	dw->channel = DW1000_CHANNEL_DEFAULT;
-	dw->prf = DW1000_PRF_FAST;
-	dw->smart_power = dw1000_default_smart_power;
+	dw->pcode = 0;
+	dw->prf = DW1000_PRF_64M;
+	dw->rate = DW1000_RATE_6800K;
+	dw->smart_power = true;
 	hw->parent = &spi->dev;
 
 	/* Report capabilities */
@@ -1420,9 +1456,6 @@ static struct spi_driver dw1000_driver = {
 	.remove = dw1000_remove,
 };
 module_spi_driver(dw1000_driver);
-
-module_param_named(default_smart_power, dw1000_default_smart_power, bool, 0644);
-MODULE_PARM_DESC(default_smart_power, "Default for TX Smart Power Control");
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Michael Brown <mbrown@fensystems.co.uk>");

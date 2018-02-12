@@ -35,10 +35,6 @@
 /* Default channel */
 #define DW1000_CHANNEL_DEFAULT 5
 
-/* Pulse repetition frequencies */
-#define DW1000_PRF_SLOW_MHZ 16
-#define DW1000_PRF_FAST_MHZ 64
-
 /* Maximum SPI bus speed when PLL is not yet locked */
 #define DW1000_SPI_SLOW_HZ 3000000
 
@@ -172,6 +168,7 @@ struct dw1000_dev_id {
 #define DW1000_SYS_CFG_FFA5			0x00000100UL
 #define DW1000_SYS_CFG_DIS_DRXB			0x00001000UL
 #define DW1000_SYS_CFG_DIS_STXP			0x00040000UL
+#define DW1000_SYS_CFG_RXM110K			0x00400000UL
 #define DW1000_SYS_CFG_RXAUTR			0x20000000UL
 
 /* Channel control register */
@@ -180,8 +177,6 @@ struct dw1000_dev_id {
 #define DW1000_CHAN_CTRL_RX_CHAN(n)		((n) << 4)
 #define DW1000_CHAN_CTRL_RX_CHAN_MASK		DW1000_CHAN_CTRL_RX_CHAN(0xf)
 #define DW1000_CHAN_CTRL_RXPRF(n)		((n) << 18)
-#define DW1000_CHAN_CTRL_RXPRF_SLOW		DW1000_CHAN_CTRL_RXPRF(0x1)
-#define DW1000_CHAN_CTRL_RXPRF_FAST		DW1000_CHAN_CTRL_RXPRF(0x2)
 #define DW1000_CHAN_CTRL_RXPRF_MASK		DW1000_CHAN_CTRL_RXPRF(0x3)
 #define DW1000_CHAN_CTRL_TX_PCODE(n)		((n) << 22)
 #define DW1000_CHAN_CTRL_TX_PCODE_MASK		DW1000_CHAN_CTRL_TX_PCODE(0x1f)
@@ -234,24 +229,22 @@ struct dw1000_dev_id {
 #define DW1000_LDELOAD_WAIT_MAX_US 500
 
 /* Pulse repetition frequencies */
-enum dw1000_prf_code {
-	DW1000_PRF_SLOW,
-	DW1000_PRF_FAST,
+enum dw1000_prf {
+	DW1000_PRF_16M = 0x1,
+	DW1000_PRF_64M = 0x2,
 	DW1000_PRF_COUNT
 };
 
-/* Channel-independent pulse repetition frequency configuration */
-struct dw1000_prf {
-	/* Frequency (in MHz) */
-	unsigned int mhz;
-	/* Channel control register RX PRF value */
-	uint32_t chan_ctrl_rxprf;
-	/* Automatic gain control tuning register 1 value */
-	uint8_t agc_tune1[2];
+/* Data rates */
+enum dw1000_rate {
+	DW1000_RATE_110K = 0x0,
+	DW1000_RATE_850K = 0x1,
+	DW1000_RATE_6800K = 0x2,
+	DW1000_RATE_COUNT
 };
 
 /* Channel configuration */
-struct dw1000_channel {
+struct dw1000_channel_config {
 	/* Analog transmit control register values */
 	uint8_t rf_txctrl[3];
 	/* Analog receive control register values */
@@ -264,8 +257,22 @@ struct dw1000_channel {
 	uint8_t fs_plltune;
 	/* Transmit power control values */
 	uint8_t tx_power[DW1000_PRF_COUNT][4];
-	/* Supported preambles */
-	unsigned long preambles[DW1000_PRF_COUNT];
+	/* Supported preamble codes */
+	unsigned long pcodes[DW1000_PRF_COUNT];
+};
+
+/* Pulse repetition frequency configuration */
+struct dw1000_prf_config {
+	/* Automatic gain control tuning register 1 value */
+	uint8_t agc_tune1[2];
+};
+
+/* Fixed configuration */
+struct dw1000_fixed_config {
+	/* Automatic gain control tuning register 2 value */
+	uint8_t agc_tune2[4];
+	/* Automatic gain control tuning register 3 value */
+	uint8_t agc_tune3[2];
 };
 
 /* Register map parameters */
@@ -342,9 +349,11 @@ struct dw1000 {
 	/* Channel number */
 	unsigned int channel;
 	/* Preamble code */
-	unsigned int preamble;
+	unsigned int pcode;
 	/* Pulse repetition frequency */
-	enum dw1000_prf_code prf;
+	enum dw1000_prf prf;
+	/* Data rate */
+	enum dw1000_rate rate;
 	/* Smart power control enabled */
 	bool smart_power;
 };
