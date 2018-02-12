@@ -171,6 +171,17 @@ struct dw1000_dev_id {
 #define DW1000_SYS_CFG_RXM110K			0x00400000UL
 #define DW1000_SYS_CFG_RXAUTR			0x20000000UL
 
+/* Transmit frame control register */
+#define DW1000_TX_FCTRL1		0x01
+#define DW1000_TX_FCTRL1_TXBR(n)		((n) << 5)
+#define DW1000_TX_FCTRL1_TXBR_MASK		DW1000_TX_FCTRL1_TXBR(0x3)
+#define DW1000_TX_FCTRL2		0x02
+#define DW1000_TX_FCTRL2_TXPRF(n)		((n) << 0)
+#define DW1000_TX_FCTRL2_TXPRF_MASK		DW1000_TX_FCTRL2_TXPRF(0x3)
+#define DW1000_TX_FCTRL2_TXPSR(n)		((n) << 2)
+#define DW1000_TX_FCTRL2_TXPSR_MASK		DW1000_TX_FCTRL2_TXPSR(0x3)
+#define DW1000_TX_FCTRL2_PE_MASK		0x30
+
 /* Channel control register */
 #define DW1000_CHAN_CTRL_TX_CHAN(n)		((n) << 0)
 #define DW1000_CHAN_CTRL_TX_CHAN_MASK		DW1000_CHAN_CTRL_TX_CHAN(0xf)
@@ -290,6 +301,8 @@ struct dw1000_prf_config {
 
 /* Data rate configuration */
 struct dw1000_rate_config {
+	/* Transmit frame control preamble symbol repetitions value */
+	unsigned int txpsr;
 	/* Digital receiver tuning register 0B value */
 	uint16_t drx_tune0b;
 	/* Digital receiver tuning register 1B value */

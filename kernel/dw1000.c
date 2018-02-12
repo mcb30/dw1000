@@ -555,6 +555,7 @@ static const struct dw1000_prf_config dw1000_prf_configs[] = {
 /* Data rate configurations */
 static const struct dw1000_rate_config dw1000_rate_configs[] = {
 	[DW1000_RATE_110K] = {
+		.txpsr = 0x3,
 		.drx_tune0b = 0x000a,
 		.drx_tune1b = 0x0064,
 		.drx_tune2 = {
@@ -564,6 +565,7 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 		.drx_tune4h = 0x0028,
 	},
 	[DW1000_RATE_850K] = {
+		.txpsr = 0x2,
 		.drx_tune0b = 0x0001,
 		.drx_tune1b = 0x0020,
 		.drx_tune2 = {
@@ -573,6 +575,7 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 		.drx_tune4h = 0x0028,
 	},
 	[DW1000_RATE_6800K] = {
+		.txpsr = 0x1,
 		.drx_tune0b = 0x0001,
 		.drx_tune1b = 0x0010,
 		.drx_tune2 = {
@@ -664,6 +667,27 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 			  DW1000_SYS_CFG_RXM110K : 0));
 		if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, mask,
 					     value)) != 0)
+			return rc;
+	}
+
+	/* TX_FCTRL registers */
+	if (changed & DW1000_CONFIGURE_RATE) {
+		mask = DW1000_TX_FCTRL1_TXBR_MASK;
+		value = DW1000_TX_FCTRL1_TXBR(rate);
+		if ((rc = regmap_update_bits(dw->tx_fctrl.regs,
+					     DW1000_TX_FCTRL1,
+					     mask, value)) != 0)
+			return rc;
+	}
+	if (changed & (DW1000_CONFIGURE_PRF | DW1000_CONFIGURE_RATE)) {
+		mask = (DW1000_TX_FCTRL2_TXPRF_MASK |
+			DW1000_TX_FCTRL2_TXPSR_MASK |
+			DW1000_TX_FCTRL2_PE_MASK);
+		value = (DW1000_TX_FCTRL2_TXPRF(prf) |
+			 DW1000_TX_FCTRL2_TXPSR(rate_cfg->txpsr));
+		if ((rc = regmap_update_bits(dw->tx_fctrl.regs,
+					     DW1000_TX_FCTRL2,
+					     mask, value)) != 0)
 			return rc;
 	}
 
