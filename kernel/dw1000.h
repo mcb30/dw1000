@@ -199,6 +199,13 @@ struct dw1000_dev_id {
 #define DW1000_GPIO_MODE_MSGP3_TXLED		0x00001000UL
 #define DW1000_GPIO_MODE_MSGP3_MASK		0x00003000UL
 
+/* Digital receiver configuration registers */
+#define DW1000_DRX_TUNE0B		0x02
+#define DW1000_DRX_TUNE1A		0x04
+#define DW1000_DRX_TUNE1B		0x06
+#define DW1000_DRX_TUNE2		0x08
+#define DW1000_DRX_TUNE4H		0x26
+
 /* Analog RF configuration registers */
 #define DW1000_RF_RXCTRLH		0x0b
 #define DW1000_RF_TXCTRL		0x0c
@@ -265,18 +272,32 @@ struct dw1000_channel_config {
 	unsigned long pcodes[DW1000_PRF_COUNT];
 };
 
-/* Pulse repetition frequency configuration */
-struct dw1000_prf_config {
-	/* Automatic gain control tuning register 1 value */
-	uint8_t agc_tune1[2];
-	/* Leading edge detection configuration register 2 value */
-	uint8_t lde_cfg2[2];
-};
-
 /* Preamble code configuration */
 struct dw1000_pcode_config {
 	/* Leading edge detection replication coefficient register value */
 	uint16_t lde_repc;
+};
+
+/* Pulse repetition frequency configuration */
+struct dw1000_prf_config {
+	/* Automatic gain control tuning register 1 value */
+	uint8_t agc_tune1[2];
+	/* Digital receiver tuning register 1A value */
+	uint16_t drx_tune1a;
+	/* Leading edge detection configuration register 2 value */
+	uint8_t lde_cfg2[2];
+};
+
+/* Data rate configuration */
+struct dw1000_rate_config {
+	/* Digital receiver tuning register 0B value */
+	uint16_t drx_tune0b;
+	/* Digital receiver tuning register 1B value */
+	uint16_t drx_tune1b;
+	/* Digital receiver runing register 2 value */
+	uint8_t drx_tune2[DW1000_PRF_COUNT][4];
+	/* Digital receiver runing register 4H value */
+	uint16_t drx_tune4h;
 };
 
 /* Fixed configuration */

@@ -512,18 +512,6 @@ static const struct dw1000_channel_config dw1000_channel_configs[] = {
 	},
 };
 
-/* Pulse repetition frequency configurations */
-static const struct dw1000_prf_config dw1000_prf_configs[] = {
-	[DW1000_PRF_16M] = {
-		.agc_tune1 = { 0x70, 0x88 },
-		.lde_cfg2 = { 0x07, 0x16 },
-	},
-	[DW1000_PRF_64M] = {
-		.agc_tune1 = { 0x9b, 0x88 },
-		.lde_cfg2 = { 0x07, 0x06 },
-	},
-};
-
 /* Preamble code configurations */
 static const struct dw1000_pcode_config dw1000_pcode_configs[] = {
 	[1]  = { .lde_repc = 0x5998 },
@@ -550,6 +538,49 @@ static const struct dw1000_pcode_config dw1000_pcode_configs[] = {
 	[22] = { .lde_repc = 0x3850 },
 	[23] = { .lde_repc = 0x30a2 },
 	[24] = { .lde_repc = 0x3850 },
+};
+
+/* Pulse repetition frequency configurations */
+static const struct dw1000_prf_config dw1000_prf_configs[] = {
+	[DW1000_PRF_16M] = {
+		.agc_tune1 = { 0x70, 0x88 },
+		.lde_cfg2 = { 0x07, 0x16 },
+	},
+	[DW1000_PRF_64M] = {
+		.agc_tune1 = { 0x9b, 0x88 },
+		.lde_cfg2 = { 0x07, 0x06 },
+	},
+};
+
+/* Data rate configurations */
+static const struct dw1000_rate_config dw1000_rate_configs[] = {
+	[DW1000_RATE_110K] = {
+		.drx_tune0b = 0x000a,
+		.drx_tune1b = 0x0064,
+		.drx_tune2 = {
+			[DW1000_PRF_16M] = { 0x1d, 0x01, 0x1a, 0x37 },
+			[DW1000_PRF_16M] = { 0x96, 0x02, 0x3b, 0x37 },
+		},
+		.drx_tune4h = 0x0028,
+	},
+	[DW1000_RATE_850K] = {
+		.drx_tune0b = 0x0001,
+		.drx_tune1b = 0x0020,
+		.drx_tune2 = {
+			[DW1000_PRF_16M] = { 0x9a, 0x00, 0x1a, 0x35 },
+			[DW1000_PRF_16M] = { 0x5e, 0x01, 0x3b, 0x35 },
+		},
+		.drx_tune4h = 0x0028,
+	},
+	[DW1000_RATE_6800K] = {
+		.drx_tune0b = 0x0001,
+		.drx_tune1b = 0x0010,
+		.drx_tune2 = {
+			[DW1000_PRF_16M] = { 0x2d, 0x00, 0x1a, 0x31 },
+			[DW1000_PRF_16M] = { 0x6b, 0x00, 0x3b, 0x31 },
+		},
+		.drx_tune4h = 0x0010,
+	},
 };
 
 /* Fixed configurations */
@@ -597,8 +628,9 @@ static unsigned int dw1000_pcode(struct dw1000 *dw)
 static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 {
 	const struct dw1000_channel_config *channel_cfg;
-	const struct dw1000_prf_config *prf_cfg;
 	const struct dw1000_pcode_config *pcode_cfg;
+	const struct dw1000_prf_config *prf_cfg;
+	const struct dw1000_rate_config *rate_cfg;
 	const struct dw1000_fixed_config *fixed_cfg;
 	uint8_t tx_power[sizeof(channel_cfg->tx_power[0])];
 	uint16_t lde_repc;
@@ -619,8 +651,9 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	rate = dw->rate;
 	smart_power = dw->smart_power;
 	channel_cfg = &dw1000_channel_configs[channel];
-	prf_cfg = &dw1000_prf_configs[prf];
 	pcode_cfg = &dw1000_pcode_configs[pcode];
+	prf_cfg = &dw1000_prf_configs[prf];
+	rate_cfg = &dw1000_rate_configs[rate];
 	fixed_cfg = &dw1000_fixed_config;
 
 	/* SYS_CFG register */
@@ -680,6 +713,35 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 		if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_TUNE3,
 					   fixed_cfg->agc_tune3,
 					   sizeof(fixed_cfg->agc_tune3))) != 0)
+			return rc;
+	}
+
+	/* DRX_CONF registers */
+	if (changed & DW1000_CONFIGURE_RATE) {
+		if ((rc = regmap_write(dw->drx_conf.regs, DW1000_DRX_TUNE0B,
+				       rate_cfg->drx_tune0b)) != 0)
+			return rc;
+	}
+	if (changed & DW1000_CONFIGURE_PRF) {
+		if ((rc = regmap_write(dw->drx_conf.regs, DW1000_DRX_TUNE1A,
+				       prf_cfg->drx_tune1a)) != 0)
+			return rc;
+	}
+	if (changed & DW1000_CONFIGURE_RATE) {
+		if ((rc = regmap_write(dw->drx_conf.regs, DW1000_DRX_TUNE1B,
+				       rate_cfg->drx_tune1b)) != 0)
+			return rc;
+	}
+	if (changed & (DW1000_CONFIGURE_PRF | DW1000_CONFIGURE_RATE)) {
+		if ((rc = regmap_raw_write(dw->drx_conf.regs, DW1000_DRX_TUNE2,
+					   rate_cfg->drx_tune2[prf],
+					   sizeof(rate_cfg->
+						  drx_tune2[prf]))) != 0)
+			return rc;
+	}
+	if (changed & DW1000_CONFIGURE_RATE) {
+		if ((rc = regmap_write(dw->drx_conf.regs, DW1000_DRX_TUNE4H,
+				       rate_cfg->drx_tune4h)) != 0)
 			return rc;
 	}
 
