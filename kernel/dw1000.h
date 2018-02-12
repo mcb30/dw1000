@@ -96,7 +96,7 @@ struct dw1000_spi_transfers {
 #define DW1000_SYS_MASK		0x0e
 #define DW1000_SYS_MASK_LEN	4
 #define DW1000_SYS_STATUS	0x0f
-#define DW1000_SYS_STATUS_LEN	8
+#define DW1000_SYS_STATUS_LEN	4
 #define DW1000_RX_FINFO		0x10
 #define DW1000_RX_FINFO_LEN	4
 #define DW1000_RX_BUFFER	0x11
@@ -266,6 +266,10 @@ struct dw1000_dev_id {
 /* Leading edge detection interface registers */
 #define DW1000_LDE_CFG2			0x1806
 #define DW1000_LDE_REPC			0x2804
+
+/* Digital diagnostic registers */
+#define DW1000_EVC_CTRL			0x00
+#define DW1000_EVC_CTRL_EVC_EN			0x0001
 
 /* Power management and system control registers */
 #define DW1000_PMSC_CTRL0		0x00
