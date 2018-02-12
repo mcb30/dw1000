@@ -327,7 +327,7 @@ DW1000_REGMAP(tx_cal, DW1000_TX_CAL, DW1000_TX_CAL_LEN, uint8_t );
 DW1000_REGMAP(fs_ctrl, DW1000_FS_CTRL, DW1000_FS_CTRL_LEN, uint8_t );
 DW1000_REGMAP(aon, DW1000_AON, DW1000_AON_LEN, uint8_t );
 DW1000_REGMAP(otp_if, DW1000_OTP_IF, DW1000_OTP_IF_LEN, uint16_t );
-DW1000_REGMAP(lde_ctrl, DW1000_LDE_CTRL, DW1000_LDE_CTRL_LEN, uint16_t );
+DW1000_REGMAP(lde_if, DW1000_LDE_IF, DW1000_LDE_IF_LEN, uint8_t );
 DW1000_REGMAP(dig_diag, DW1000_DIG_DIAG, DW1000_DIG_DIAG_LEN, uint16_t );
 DW1000_REGMAP(pmsc, DW1000_PMSC, DW1000_PMSC_LEN, uint32_t );
 
@@ -367,7 +367,7 @@ static const struct dw1000_regmap_config *dw1000_configs[] = {
 	&dw1000_fs_ctrl,
 	&dw1000_aon,
 	&dw1000_otp_if,
-	&dw1000_lde_ctrl,
+	&dw1000_lde_if,
 	&dw1000_dig_diag,
 	&dw1000_pmsc,
 };
@@ -513,13 +513,43 @@ static const struct dw1000_channel_config dw1000_channel_configs[] = {
 };
 
 /* Pulse repetition frequency configurations */
-static const struct dw1000_prf_config dw1000_prf_configs[DW1000_PRF_COUNT] = {
+static const struct dw1000_prf_config dw1000_prf_configs[] = {
 	[DW1000_PRF_16M] = {
 		.agc_tune1 = { 0x70, 0x88 },
+		.lde_cfg2 = { 0x07, 0x16 },
 	},
 	[DW1000_PRF_64M] = {
 		.agc_tune1 = { 0x9b, 0x88 },
+		.lde_cfg2 = { 0x07, 0x06 },
 	},
+};
+
+/* Preamble code configurations */
+static const struct dw1000_pcode_config dw1000_pcode_configs[] = {
+	[1]  = { .lde_repc = 0x5998 },
+	[2]  = { .lde_repc = 0x5998 },
+	[3]  = { .lde_repc = 0x51ea },
+	[4]  = { .lde_repc = 0x428e },
+	[5]  = { .lde_repc = 0x451e },
+	[6]  = { .lde_repc = 0x2e14 },
+	[7]  = { .lde_repc = 0x8000 },
+	[8]  = { .lde_repc = 0x51ea },
+	[9]  = { .lde_repc = 0x28f4 },
+	[10] = { .lde_repc = 0x3332 },
+	[11] = { .lde_repc = 0x3ae0 },
+	[12] = { .lde_repc = 0x3d70 },
+	[13] = { .lde_repc = 0x3ae0 },
+	[14] = { .lde_repc = 0x35c2 },
+	[15] = { .lde_repc = 0x2b84 },
+	[16] = { .lde_repc = 0x35c2 },
+	[17] = { .lde_repc = 0x3332 },
+	[18] = { .lde_repc = 0x35c2 },
+	[19] = { .lde_repc = 0x35c2 },
+	[20] = { .lde_repc = 0x47ae },
+	[21] = { .lde_repc = 0x3ae0 },
+	[22] = { .lde_repc = 0x3850 },
+	[23] = { .lde_repc = 0x30a2 },
+	[24] = { .lde_repc = 0x3850 },
 };
 
 /* Fixed configurations */
@@ -568,8 +598,10 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 {
 	const struct dw1000_channel_config *channel_cfg;
 	const struct dw1000_prf_config *prf_cfg;
+	const struct dw1000_pcode_config *pcode_cfg;
 	const struct dw1000_fixed_config *fixed_cfg;
 	uint8_t tx_power[sizeof(channel_cfg->tx_power[0])];
+	uint16_t lde_repc;
 	unsigned int channel;
 	unsigned int pcode;
 	enum dw1000_prf prf;
@@ -588,6 +620,7 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	smart_power = dw->smart_power;
 	channel_cfg = &dw1000_channel_configs[channel];
 	prf_cfg = &dw1000_prf_configs[prf];
+	pcode_cfg = &dw1000_pcode_configs[pcode];
 	fixed_cfg = &dw1000_fixed_config;
 
 	/* SYS_CFG register */
@@ -634,20 +667,17 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 
 	/* AGC_CTRL registers */
 	if (changed & DW1000_CONFIGURE_PRF) {
-		if ((rc = regmap_raw_write(dw->agc_ctrl.regs,
-					   DW1000_AGC_CTRL_TUNE1,
+		if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_TUNE1,
 					   prf_cfg->agc_tune1,
 					   sizeof(prf_cfg->agc_tune1))) != 0)
 			return rc;
 	}
 	if (changed & DW1000_CONFIGURE_FIXED) {
-		if ((rc = regmap_raw_write(dw->agc_ctrl.regs,
-					   DW1000_AGC_CTRL_TUNE2,
+		if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_TUNE2,
 					   fixed_cfg->agc_tune2,
 					   sizeof(fixed_cfg->agc_tune2))) != 0)
 			return rc;
-		if ((rc = regmap_raw_write(dw->agc_ctrl.regs,
-					   DW1000_AGC_CTRL_TUNE3,
+		if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_TUNE3,
 					   fixed_cfg->agc_tune3,
 					   sizeof(fixed_cfg->agc_tune3))) != 0)
 			return rc;
@@ -655,35 +685,47 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 
 	/* RF_CONF registers */
 	if (changed & DW1000_CONFIGURE_CHANNEL) {
-		if ((rc = regmap_raw_write(dw->rf_conf.regs,
-					   DW1000_RF_CONF_RF_TXCTRL,
+		if ((rc = regmap_raw_write(dw->rf_conf.regs, DW1000_RF_TXCTRL,
 					   channel_cfg->rf_txctrl,
 					   sizeof(channel_cfg->rf_txctrl))) !=0)
 			return rc;
-		if ((rc = regmap_write(dw->rf_conf.regs,
-				       DW1000_RF_CONF_RF_RXCTRLH,
+		if ((rc = regmap_write(dw->rf_conf.regs, DW1000_RF_RXCTRLH,
 				       channel_cfg->rf_rxctrlh)) != 0)
 			return rc;
 	}
 
 	/* TX_CAL registers */
 	if (changed & DW1000_CONFIGURE_CHANNEL) {
-		if ((rc = regmap_write(dw->tx_cal.regs,
-				       DW1000_TX_CAL_TC_PGDELAY,
+		if ((rc = regmap_write(dw->tx_cal.regs, DW1000_TC_PGDELAY,
 				       channel_cfg->tc_pgdelay)) != 0)
 			return rc;
 	}
 
 	/* FS_CTRL registers */
 	if (changed & DW1000_CONFIGURE_CHANNEL) {
-		if ((rc = regmap_raw_write(dw->fs_ctrl.regs,
-					   DW1000_FS_CTRL_FS_PLLCFG,
+		if ((rc = regmap_raw_write(dw->fs_ctrl.regs, DW1000_FS_PLLCFG,
 					   channel_cfg->fs_pllcfg,
 					   sizeof(channel_cfg->fs_pllcfg))) !=0)
 			return rc;
-		if ((rc = regmap_write(dw->fs_ctrl.regs,
-				       DW1000_FS_CTRL_FS_PLLTUNE,
+		if ((rc = regmap_write(dw->fs_ctrl.regs, DW1000_FS_PLLTUNE,
 				       channel_cfg->fs_plltune)) != 0)
+			return rc;
+	}
+
+	/* LDE_IF registers */
+	if (changed & DW1000_CONFIGURE_PRF) {
+		if ((rc = regmap_raw_write(dw->lde_if.regs, DW1000_LDE_CFG2,
+					   prf_cfg->lde_cfg2,
+					   sizeof(prf_cfg->lde_cfg2))) != 0)
+			return rc;
+	}
+	if (changed & (DW1000_CONFIGURE_PCODE | DW1000_CONFIGURE_RATE)) {
+		lde_repc = pcode_cfg->lde_repc;
+		if (rate == DW1000_RATE_110K)
+			lde_repc >>= 3;
+		cpu_to_le16s(&lde_repc);
+		if ((rc = regmap_raw_write(dw->lde_if.regs, DW1000_LDE_REPC,
+					   &lde_repc, sizeof(lde_repc))) != 0)
 			return rc;
 	}
 
@@ -1242,9 +1284,9 @@ static int dw1000_load_lde(struct dw1000 *dw)
 		return rc;
 
 	/* Initiate load of LDE microcode */
-	if ((rc = regmap_update_bits(dw->otp_if.regs, DW1000_OTP_IF_CTRL,
-				     DW1000_OTP_IF_CTRL_LDELOAD,
-				     DW1000_OTP_IF_CTRL_LDELOAD)) != 0)
+	if ((rc = regmap_update_bits(dw->otp_if.regs, DW1000_OTP_CTRL,
+				     DW1000_OTP_CTRL_LDELOAD,
+				     DW1000_OTP_CTRL_LDELOAD)) != 0)
 		return rc;
 
 	/* Allow time for microcode load to complete */
@@ -1278,9 +1320,9 @@ static int dw1000_init(struct dw1000 *dw)
 {
 	uint32_t sys_cfg_filters;
 	uint32_t sys_cfg_mask;
-	uint32_t sys_cfg_val;
-	uint32_t gpio_ctrl_mask;
-	uint32_t gpio_ctrl_val;
+	uint32_t sys_cfg_value;
+	uint32_t gpio_mode_mask;
+	uint32_t gpio_mode_value;
 	int rc;
 
 	/* Set system configuration:
@@ -1298,22 +1340,22 @@ static int dw1000_init(struct dw1000 *dw)
 			   DW1000_SYS_CFG_FFA5);
 	sys_cfg_mask = (sys_cfg_filters | DW1000_SYS_CFG_DIS_DRXB |
 			DW1000_SYS_CFG_RXAUTR);
-	sys_cfg_val = (sys_cfg_filters | DW1000_SYS_CFG_RXAUTR);
+	sys_cfg_value = (sys_cfg_filters | DW1000_SYS_CFG_RXAUTR);
 	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, sys_cfg_mask,
-				     sys_cfg_val)) != 0)
+				     sys_cfg_value)) != 0)
 		return rc;
 
 	/* Enable LEDs */
-	gpio_ctrl_mask = (DW1000_GPIO_CTRL_MODE_MSGP0_MASK |
-			  DW1000_GPIO_CTRL_MODE_MSGP1_MASK |
-			  DW1000_GPIO_CTRL_MODE_MSGP2_MASK |
-			  DW1000_GPIO_CTRL_MODE_MSGP3_MASK);
-	gpio_ctrl_val = (DW1000_GPIO_CTRL_MODE_MSGP0_RXOKLED |
-			 DW1000_GPIO_CTRL_MODE_MSGP1_SFDLED |
-			 DW1000_GPIO_CTRL_MODE_MSGP2_RXLED |
-			 DW1000_GPIO_CTRL_MODE_MSGP3_TXLED);
-	if ((rc = regmap_update_bits(dw->gpio_ctrl.regs, DW1000_GPIO_CTRL_MODE,
-				     gpio_ctrl_mask, gpio_ctrl_val)) != 0)
+	gpio_mode_mask = (DW1000_GPIO_MODE_MSGP0_MASK |
+			  DW1000_GPIO_MODE_MSGP1_MASK |
+			  DW1000_GPIO_MODE_MSGP2_MASK |
+			  DW1000_GPIO_MODE_MSGP3_MASK);
+	gpio_mode_value = (DW1000_GPIO_MODE_MSGP0_RXOKLED |
+			   DW1000_GPIO_MODE_MSGP1_SFDLED |
+			   DW1000_GPIO_MODE_MSGP2_RXLED |
+			   DW1000_GPIO_MODE_MSGP3_TXLED);
+	if ((rc = regmap_update_bits(dw->gpio_ctrl.regs, DW1000_GPIO_MODE,
+				     gpio_mode_mask, gpio_mode_value)) != 0)
 		return rc;
 
 	/* Load LDE microcode */

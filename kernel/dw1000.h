@@ -132,8 +132,8 @@ struct dw1000_spi_header {
 #define DW1000_AON_LEN		12
 #define DW1000_OTP_IF		0x2d
 #define DW1000_OTP_IF_LEN	18
-#define DW1000_LDE_CTRL		0x2e
-#define DW1000_LDE_CTRL_LEN	0x2806
+#define DW1000_LDE_IF		0x2e
+#define DW1000_LDE_IF_LEN	0x2806
 #define DW1000_DIG_DIAG		0x2f
 #define DW1000_DIG_DIAG_LEN	41
 #define DW1000_PMSC		0x36
@@ -184,35 +184,39 @@ struct dw1000_dev_id {
 #define DW1000_CHAN_CTRL_RX_PCODE_MASK		DW1000_CHAN_CTRL_RX_PCODE(0x1f)
 
 /* Automatic gain control registers */
-#define DW1000_AGC_CTRL_TUNE1		0x04
-#define DW1000_AGC_CTRL_TUNE2		0x0c
-#define DW1000_AGC_CTRL_TUNE3		0x12
+#define DW1000_AGC_TUNE1		0x04
+#define DW1000_AGC_TUNE2		0x0c
+#define DW1000_AGC_TUNE3		0x12
 
 /* GPIO control registers */
-#define DW1000_GPIO_CTRL_MODE		0x00
-#define DW1000_GPIO_CTRL_MODE_MSGP0_RXOKLED	0x00000040UL
-#define DW1000_GPIO_CTRL_MODE_MSGP0_MASK	0x000000c0UL
-#define DW1000_GPIO_CTRL_MODE_MSGP1_SFDLED	0x00000100UL
-#define DW1000_GPIO_CTRL_MODE_MSGP1_MASK	0x00000300UL
-#define DW1000_GPIO_CTRL_MODE_MSGP2_RXLED	0x00000400UL
-#define DW1000_GPIO_CTRL_MODE_MSGP2_MASK	0x00000c00UL
-#define DW1000_GPIO_CTRL_MODE_MSGP3_TXLED	0x00001000UL
-#define DW1000_GPIO_CTRL_MODE_MSGP3_MASK	0x00003000UL
+#define DW1000_GPIO_MODE		0x00
+#define DW1000_GPIO_MODE_MSGP0_RXOKLED		0x00000040UL
+#define DW1000_GPIO_MODE_MSGP0_MASK		0x000000c0UL
+#define DW1000_GPIO_MODE_MSGP1_SFDLED		0x00000100UL
+#define DW1000_GPIO_MODE_MSGP1_MASK		0x00000300UL
+#define DW1000_GPIO_MODE_MSGP2_RXLED		0x00000400UL
+#define DW1000_GPIO_MODE_MSGP2_MASK		0x00000c00UL
+#define DW1000_GPIO_MODE_MSGP3_TXLED		0x00001000UL
+#define DW1000_GPIO_MODE_MSGP3_MASK		0x00003000UL
 
 /* Analog RF configuration registers */
-#define DW1000_RF_CONF_RF_RXCTRLH	0x0b
-#define DW1000_RF_CONF_RF_TXCTRL	0x0c
+#define DW1000_RF_RXCTRLH		0x0b
+#define DW1000_RF_TXCTRL		0x0c
 
 /* Transmitter calibration registers */
-#define DW1000_TX_CAL_TC_PGDELAY	0x0b
+#define DW1000_TC_PGDELAY		0x0b
 
 /* Frequency synthesiser control registers */
-#define DW1000_FS_CTRL_FS_PLLCFG	0x07
-#define DW1000_FS_CTRL_FS_PLLTUNE	0x0b
+#define DW1000_FS_PLLCFG		0x07
+#define DW1000_FS_PLLTUNE		0x0b
 
 /* One-time programmable memory interface registers */
-#define DW1000_OTP_IF_CTRL		0x06
-#define DW1000_OTP_IF_CTRL_LDELOAD		0x8000
+#define DW1000_OTP_CTRL			0x06
+#define DW1000_OTP_CTRL_LDELOAD			0x8000
+
+/* Leading edge detection interface registers */
+#define DW1000_LDE_CFG2			0x1806
+#define DW1000_LDE_REPC			0x2804
 
 /* Power management and system control registers */
 #define DW1000_PMSC_CTRL0		0x00
@@ -249,13 +253,13 @@ struct dw1000_channel_config {
 	uint8_t rf_txctrl[3];
 	/* Analog receive control register values */
 	uint8_t rf_rxctrlh;
-	/* Transmitter calibration pulse generator delay */
+	/* Transmitter calibration pulse generator delay register value */
 	uint8_t tc_pgdelay;
-	/* Frequency synthesiser PLL configuration */
+	/* Frequency synthesiser PLL configuration register value */
 	uint8_t fs_pllcfg[4];
-	/* Frequency synthesiser PLL tuning */
+	/* Frequency synthesiser PLL tuning register value */
 	uint8_t fs_plltune;
-	/* Transmit power control values */
+	/* Transmit power control register values */
 	uint8_t tx_power[DW1000_PRF_COUNT][4];
 	/* Supported preamble codes */
 	unsigned long pcodes[DW1000_PRF_COUNT];
@@ -265,6 +269,14 @@ struct dw1000_channel_config {
 struct dw1000_prf_config {
 	/* Automatic gain control tuning register 1 value */
 	uint8_t agc_tune1[2];
+	/* Leading edge detection configuration register 2 value */
+	uint8_t lde_cfg2[2];
+};
+
+/* Preamble code configuration */
+struct dw1000_pcode_config {
+	/* Leading edge detection replication coefficient register value */
+	uint16_t lde_repc;
 };
 
 /* Fixed configuration */
@@ -343,7 +355,7 @@ struct dw1000 {
 	struct dw1000_regmap fs_ctrl;
 	struct dw1000_regmap aon;
 	struct dw1000_regmap otp_if;
-	struct dw1000_regmap lde_ctrl;
+	struct dw1000_regmap lde_if;
 	struct dw1000_regmap dig_diag;
 	struct dw1000_regmap pmsc;
 	/* Channel number */
