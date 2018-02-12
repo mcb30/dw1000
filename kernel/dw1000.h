@@ -204,6 +204,7 @@ struct dw1000_dev_id {
 #define DW1000_SYS_CTRL0_TXSTRT			0x02
 #define DW1000_SYS_CTRL0_CANSFCS		0x08
 #define DW1000_SYS_CTRL0_TRXOFF			0x40
+#define DW1000_SYS_CTRL0_WAIT4RESP		0x80
 #define DW1000_SYS_CTRL1		0x01
 #define DW1000_SYS_CTRL1_RXENAB			0x01
 #define DW1000_SYS_CTRL3		0x03
@@ -403,8 +404,10 @@ struct dw1000_xmit {
 	struct dw1000_spi_transfers tx_buffer;
 	/* SPI transfers for frame control */
 	struct dw1000_spi_transfers tx_fctrl;
-	/* SPI transfers for doorbell */
-	struct dw1000_spi_transfers sys_ctrl;
+	/* SPI transfers for RX disable */
+	struct dw1000_spi_transfers sys_ctrl_trxoff;
+	/* SPI transfers for TX start */
+	struct dw1000_spi_transfers sys_ctrl_txstrt;
 };
 
 /* DW1000 device */

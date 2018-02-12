@@ -1123,16 +1123,26 @@ static void dw1000_irq_worker(struct work_struct *work)
 static int dw1000_start(struct ieee802154_hw *hw)
 {
 	struct dw1000 *dw = hw->priv;
-	int value;
 	int rc;
 
 	/* Enable interrupt generation */
-	value = DW1000_IRQ_TXFRS;
-	if ((rc = regmap_write(dw->sys_mask.regs, 0, value)) != 0)
-		return rc;
+	if ((rc = regmap_write(dw->sys_mask.regs, 0, DW1000_IRQ_TXFRS)) != 0)
+		goto err_sys_mask;
+
+	/* Enable receiver */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL1,
+			       DW1000_SYS_CTRL1_RXENAB)) != 0)
+		goto err_sys_ctrl1;
 
 	dev_info(dw->dev, "started\n");
 	return 0;
+
+	regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
+		     DW1000_SYS_CTRL0_TRXOFF);
+ err_sys_ctrl1:
+	regmap_write(dw->sys_mask.regs, 0, 0);
+ err_sys_mask:
+	return rc;
 }
 
 /**
@@ -1653,7 +1663,9 @@ static int dw1000_init(struct dw1000 *dw)
  */
 static int dw1000_prepare(struct dw1000 *dw)
 {
-	static const uint8_t txstrt = DW1000_SYS_CTRL0_TXSTRT;
+	static const uint8_t trxoff = DW1000_SYS_CTRL0_TRXOFF;
+	static const uint8_t txstrt = (DW1000_SYS_CTRL0_TXSTRT |
+				       DW1000_SYS_CTRL0_WAIT4RESP);
 	struct dw1000_xmit *tx = &dw->tx;
 
 	/* Prepare transmission */
@@ -1665,7 +1677,9 @@ static int dw1000_prepare(struct dw1000 *dw)
 			  NULL, 0);
 	dw1000_init_write(&tx->msg, &tx->tx_fctrl, DW1000_TX_FCTRL,
 			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
-	dw1000_init_write(&tx->msg, &tx->sys_ctrl, DW1000_SYS_CTRL,
+	dw1000_init_write(&tx->msg, &tx->sys_ctrl_trxoff, DW1000_SYS_CTRL,
+			  DW1000_SYS_CTRL0, &trxoff, sizeof(trxoff));
+	dw1000_init_write(&tx->msg, &tx->sys_ctrl_txstrt, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL0, &txstrt, sizeof(txstrt));
 
 	return 0;
