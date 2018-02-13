@@ -502,7 +502,7 @@ static const struct dw1000_channel_config dw1000_channel_configs[] = {
 			[DW1000_PRF_64M] = { 0x85, 0x65, 0x45, 0x25 },
 		},
 		.pcodes = {
-			[DW1000_PRF_16M] = (BIT(5) | BIT(6)),
+			[DW1000_PRF_16M] = (BIT(3) | BIT(4)),
 			[DW1000_PRF_64M] = (BIT(9) | BIT(10) | BIT(11) |
 					    BIT(12)),
 		},
