@@ -639,7 +639,7 @@ static unsigned int dw1000_pcode(struct dw1000 *dw)
 	if (BIT(dw->pcode) & pcodes)
 		return dw->pcode;
 
-	/* Otherwise, use first pcodes preamble code */
+	/* Otherwise, use highest supported preamble code */
 	return (fls(pcodes) - 1);
 }
 
