@@ -1047,7 +1047,7 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 	tx->skb = skb;
 	tx->tx_buffer.data.tx_buf = skb->data;
 	tx->tx_buffer.data.len = skb->len;
-	tx->len = DW1000_TX_FCTRL0_TFLEN(skb->len);
+	tx->len = DW1000_TX_FCTRL0_TFLEN(skb->len + IEEE802154_FCS_LEN);
 	tx->data_complete = false;
 
 	/* Initiate data SPI message */
@@ -1187,6 +1187,12 @@ static void dw1000_rx_dfr(struct dw1000 *dw)
 
 	/* Allocate socket buffer */
 	len = DW1000_RX_FINFO_RXFLEN(finfo);
+	if (len < IEEE802154_FCS_LEN) {
+		dev_err(dw->dev, "RX received underlength frame (%zd bytes)\n",
+			len);
+		return;
+	}
+	len -= IEEE802154_FCS_LEN;
 	skb = dev_alloc_skb(len);
 	if (!skb) {
 		dev_err(dw->dev, "RX buffer allocation failed\n");

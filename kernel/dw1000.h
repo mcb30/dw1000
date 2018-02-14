@@ -191,7 +191,7 @@ struct dw1000_dev_id {
 
 /* Transmit frame control register */
 #define DW1000_TX_FCTRL0		0x00
-#define DW1000_TX_FCTRL0_TFLEN(n)		(((n) + 2) << 0)
+#define DW1000_TX_FCTRL0_TFLEN(n)		((n) << 0)
 #define DW1000_TX_FCTRL1		0x01
 #define DW1000_TX_FCTRL1_TXBR(n)		((n) << 5)
 #define DW1000_TX_FCTRL1_TXBR_MASK		DW1000_TX_FCTRL1_TXBR(0x3)
