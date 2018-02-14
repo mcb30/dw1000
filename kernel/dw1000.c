@@ -1846,6 +1846,9 @@ static int dw1000_init(struct dw1000 *dw)
 	if ((rc = dw1000_reconfigure(dw, -1U)) != 0)
 		return rc;
 
+	/* Generate a random extended address */
+	ieee802154_random_extended_addr(&dw->phy->perm_extended_addr);
+
 	return 0;
 }
 
