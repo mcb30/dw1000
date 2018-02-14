@@ -488,9 +488,10 @@ static const struct dw1000_channel_config dw1000_channel_configs[] = {
 			[DW1000_PRF_64M] = { 0x9a, 0x7a, 0x5a, 0x3a },
 		},
 		.pcodes = {
-			[DW1000_PRF_16M] = (BIT(7) | BIT(8)),
-			[DW1000_PRF_64M] = (BIT(17) | BIT(18) | BIT(19) |
-					    BIT(20)),
+			[DW1000_PRF_16M] = (BIT(3) | BIT(4) | BIT(7) | BIT(8)),
+			[DW1000_PRF_64M] = (BIT(9) | BIT(10) | BIT(11) |
+					    BIT(12) | BIT(17) | BIT(18) |
+					    BIT(19) | BIT(20)),
 		},
 	},
 	[5] = {
@@ -520,9 +521,10 @@ static const struct dw1000_channel_config dw1000_channel_configs[] = {
 			[DW1000_PRF_64M] = { 0xd1, 0xb1, 0x71, 0x51 },
 		},
 		.pcodes = {
-			[DW1000_PRF_16M] = (BIT(7) | BIT(8)),
-			[DW1000_PRF_64M] = (BIT(17) | BIT(18) | BIT(19) |
-					    BIT(20)),
+			[DW1000_PRF_16M] = (BIT(3) | BIT(4) | BIT(7) | BIT(8)),
+			[DW1000_PRF_64M] = (BIT(9) | BIT(10) | BIT(11) |
+					    BIT(12) | BIT(17) | BIT(18) |
+					    BIT(19) | BIT(20)),
 		},
 	},
 };
