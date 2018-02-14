@@ -557,10 +557,12 @@ static const struct dw1000_pcode_config dw1000_pcode_configs[] = {
 static const struct dw1000_prf_config dw1000_prf_configs[] = {
 	[DW1000_PRF_16M] = {
 		.agc_tune1 = { 0x70, 0x88 },
+		.drx_tune1a = 0x0087,
 		.lde_cfg2 = { 0x07, 0x16 },
 	},
 	[DW1000_PRF_64M] = {
 		.agc_tune1 = { 0x9b, 0x88 },
+		.drx_tune1a = 0x008d,
 		.lde_cfg2 = { 0x07, 0x06 },
 	},
 };
