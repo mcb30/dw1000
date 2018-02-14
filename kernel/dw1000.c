@@ -325,6 +325,7 @@ DW1000_REGMAP(rx_ttcko, DW1000_RX_TTCKO, DW1000_RX_TTCKO_LEN, uint8_t);
 DW1000_REGMAP(rx_time, DW1000_RX_TIME, DW1000_RX_TIME_LEN, uint8_t);
 DW1000_REGMAP(tx_time, DW1000_TX_TIME, DW1000_TX_TIME_LEN, uint8_t);
 DW1000_REGMAP(tx_antd, DW1000_TX_ANTD, DW1000_TX_ANTD_LEN, uint16_t);
+DW1000_REGMAP(sys_state, DW1000_SYS_STATE, DW1000_SYS_STATE_LEN, uint8_t);
 DW1000_REGMAP(ack_resp_t, DW1000_ACK_RESP_T, DW1000_ACK_RESP_T_LEN, uint32_t);
 DW1000_REGMAP(rx_sniff, DW1000_RX_SNIFF, DW1000_RX_SNIFF_LEN, uint32_t);
 DW1000_REGMAP(tx_power, DW1000_TX_POWER, DW1000_TX_POWER_LEN, uint8_t);
@@ -365,6 +366,7 @@ static const struct dw1000_regmap_config *dw1000_configs[] = {
 	&dw1000_rx_time,
 	&dw1000_tx_time,
 	&dw1000_tx_antd,
+	&dw1000_sys_state,
 	&dw1000_ack_resp_t,
 	&dw1000_rx_sniff,
 	&dw1000_tx_power,

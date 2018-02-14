@@ -113,6 +113,8 @@ struct dw1000_spi_transfers {
 #define DW1000_TX_TIME_LEN	10
 #define DW1000_TX_ANTD		0x18
 #define DW1000_TX_ANTD_LEN	2
+#define DW1000_SYS_STATE	0x19
+#define DW1000_SYS_STATE_LEN	3
 #define DW1000_ACK_RESP_T	0x1a
 #define DW1000_ACK_RESP_T_LEN	4
 #define DW1000_RX_SNIFF		0x1d
@@ -446,6 +448,7 @@ struct dw1000 {
 	struct dw1000_regmap rx_time;
 	struct dw1000_regmap tx_time;
 	struct dw1000_regmap tx_antd;
+	struct dw1000_regmap sys_state;
 	struct dw1000_regmap ack_resp_t;
 	struct dw1000_regmap rx_sniff;
 	struct dw1000_regmap tx_power;
