@@ -1187,12 +1187,6 @@ static void dw1000_rx_dfr(struct dw1000 *dw)
 
 	/* Allocate socket buffer */
 	len = DW1000_RX_FINFO_RXFLEN(finfo);
-	if (len < IEEE802154_FCS_LEN) {
-		dev_err(dw->dev, "RX received underlength frame (%zd bytes)\n",
-			len);
-		return;
-	}
-	len -= IEEE802154_FCS_LEN;
 	skb = dev_alloc_skb(len);
 	if (!skb) {
 		dev_err(dw->dev, "RX buffer allocation failed\n");
@@ -1893,7 +1887,6 @@ static int dw1000_probe(struct spi_device *spi)
 	hw->flags = (IEEE802154_HW_TX_OMIT_CKSUM |
 		     IEEE802154_HW_AFILT |
 		     IEEE802154_HW_PROMISCUOUS |
-		     IEEE802154_HW_RX_OMIT_CKSUM |
 		     IEEE802154_HW_RX_DROP_BAD_CKSUM);
 	hw->phy->supported.channels[DW1000_CHANNEL_PAGE] = DW1000_CHANNELS;
 	hw->phy->current_page = DW1000_CHANNEL_PAGE;
