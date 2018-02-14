@@ -1811,6 +1811,7 @@ static int dw1000_remove(struct spi_device *spi)
 
 	ieee802154_unregister_hw(hw);
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
+	dw1000_reset(dw);
 	ieee802154_free_hw(hw);
 	return 0;
 }
