@@ -980,53 +980,51 @@ static int dw1000_configure_smart_power(struct dw1000 *dw, bool smart_power)
  *
  */
 
+static void dw1000_tx_data_complete(void *context);
+static void dw1000_tx_complete(struct dw1000 *dw);
+
 /**
- * dw1000_tx_complete() - Handle transmit completion
+ * dw1000_tx_prepare() - Prepare transmit SPI messages
  *
  * @dw:			DW1000 device
+ * @return:		0 on success or -errno
  */
-static void dw1000_tx_complete(struct dw1000 *dw)
+static int dw1000_tx_prepare(struct dw1000 *dw)
 {
+	static const uint8_t trxoff = DW1000_SYS_CTRL0_TRXOFF;
+	static const uint8_t txstrt = (DW1000_SYS_CTRL0_TXSTRT |
+				       DW1000_SYS_CTRL0_WAIT4RESP);
+	static const uint8_t txfrs = DW1000_SYS_STATUS0_TXFRS;
 	struct dw1000_tx *tx = &dw->tx;
-	struct sk_buff *skb;
-	size_t sifs_max_len;
 
-	/* Ignore if submission has not yet completed */
-	if (!tx->submitted) {
-		dev_err(dw->dev, "spurious transmit completion\n");
-		return;
-	}
+	/* Initialise transmit descriptor */
+	memset(tx, 0, sizeof(*tx));
 
-	/* Report completion to IEEE 802.15.4 stack */
-	skb = tx->skb;
-	tx->skb = NULL;
-	sifs_max_len = (IEEE802154_MAX_SIFS_FRAME_SIZE - IEEE802154_FCS_LEN);
-	ieee802154_xmit_complete(dw->hw, skb, (skb->len <= sifs_max_len));
+	/* Prepare data SPI message */
+	spi_message_init_no_memset(&tx->data);
+	tx->data.complete = dw1000_tx_data_complete;
+	tx->data.context = dw;
+	dw1000_init_write(&tx->data, &tx->tx_buffer, DW1000_TX_BUFFER, 0,
+			  NULL, 0);
+	dw1000_init_write(&tx->data, &tx->tx_fctrl, DW1000_TX_FCTRL,
+			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
+	dw1000_init_write(&tx->data, &tx->sys_ctrl_trxoff, DW1000_SYS_CTRL,
+			  DW1000_SYS_CTRL0, &trxoff, sizeof(trxoff));
+	dw1000_init_write(&tx->data, &tx->sys_ctrl_txstrt, DW1000_SYS_CTRL,
+			  DW1000_SYS_CTRL0, &txstrt, sizeof(txstrt));
+
+	/* Prepare information SPI message */
+	spi_message_init_no_memset(&tx->info);
+	dw1000_init_read(&tx->info, &tx->tx_time, DW1000_TX_TIME,
+			 DW1000_TX_STAMP, &tx->time, sizeof(tx->time));
+	dw1000_init_write(&tx->info, &tx->sys_status, DW1000_SYS_STATUS,
+			  DW1000_SYS_STATUS0, &txfrs, sizeof(txfrs));
+
+	return 0;
 }
 
 /**
- * dw1000_tx_complete() - Handle transmit SPI message completion
- *
- * @context:		DW1000 device
- */
-static void dw1000_tx_spi_complete(void *context)
-{
-	struct dw1000 *dw = context;
-	struct dw1000_tx *tx = &dw->tx;
-
-	/* Mark as submitted */
-	tx->submitted = true;
-
-	/* Complete immediately if submission failed */
-	if (tx->msg.status != 0) {
-		dev_err(dw->dev, "transmit submission failed: %d\n",
-			tx->msg.status);
-		dw1000_tx_complete(dw);
-	}
-}
-
-/**
- * dw1000_tx_async() - Transmit packet
+ * dw1000_tx() - Transmit packet
  *
  * @hw:			IEEE 802.15.4 device
  * @skb:		Socket buffer
@@ -1045,15 +1043,15 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 		goto err_concurrent;
 	}
 
-	/* Construct transmit descriptor */
+	/* Update data SPI message */
 	tx->skb = skb;
 	tx->tx_buffer.data.tx_buf = skb->data;
 	tx->tx_buffer.data.len = skb->len;
 	tx->len = DW1000_TX_FCTRL0_TFLEN(skb->len);
-	tx->submitted = false;
+	tx->data_complete = false;
 
-	/* Post transmit descriptor */
-	if ((rc = spi_async(dw->spi, &tx->msg)) != 0)
+	/* Initiate data SPI message */
+	if ((rc = spi_async(dw->spi, &tx->data)) != 0)
 		goto err_spi;
 
 	return 0;
@@ -1065,33 +1063,69 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 }
 
 /**
- * dw1000_tx_prepare() - Prepare transmit descriptor
+ * dw1000_tx_data_complete() - Handle transmit data SPI message completion
  *
- * @dw:			DW1000 device
- * @return:		0 on success or -errno
+ * @context:		DW1000 device
  */
-static int dw1000_tx_prepare(struct dw1000 *dw)
+static void dw1000_tx_data_complete(void *context)
 {
-	static const uint8_t trxoff = DW1000_SYS_CTRL0_TRXOFF;
-	static const uint8_t txstrt = (DW1000_SYS_CTRL0_TXSTRT |
-				       DW1000_SYS_CTRL0_WAIT4RESP);
+	struct dw1000 *dw = context;
 	struct dw1000_tx *tx = &dw->tx;
 
-	/* Prepare transmit descriptor */
-	memset(tx, 0, sizeof(*tx));
-	spi_message_init_no_memset(&tx->msg);
-	tx->msg.complete = dw1000_tx_spi_complete;
-	tx->msg.context = dw;
-	dw1000_init_write(&tx->msg, &tx->tx_buffer, DW1000_TX_BUFFER, 0,
-			  NULL, 0);
-	dw1000_init_write(&tx->msg, &tx->tx_fctrl, DW1000_TX_FCTRL,
-			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
-	dw1000_init_write(&tx->msg, &tx->sys_ctrl_trxoff, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL0, &trxoff, sizeof(trxoff));
-	dw1000_init_write(&tx->msg, &tx->sys_ctrl_txstrt, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL0, &txstrt, sizeof(txstrt));
+	/* Mark data SPI message as complete */
+	tx->data_complete = true;
 
-	return 0;
+	/* Complete transmission immediately if data SPI message failed */
+	if (tx->data.status != 0) {
+		dev_err(dw->dev, "TX data message failed: %d\n",
+			tx->data.status);
+		dw1000_tx_complete(dw);
+	}
+}
+
+/**
+ * dw1000_tx_frs() - Handle Transmit Frame Sent (TXFRS) event
+ *
+ * @dw:			DW1000 device
+ */
+static void dw1000_tx_frs(struct dw1000 *dw)
+{
+	struct dw1000_tx *tx = &dw->tx;
+	int rc;
+
+	/* Ignore if data SPI message has not yet completed */
+	if (!tx->data_complete) {
+		dev_err(dw->dev, "spurious TXFRS event\n");
+		return;
+	}
+
+	/* Send information SPI message */
+	if ((rc = spi_sync(dw->spi, &tx->info)) != 0) {
+		dev_err(dw->dev, "TX information message failed: %d\n", rc);
+		dw1000_tx_complete(dw);
+		return;
+	}
+
+	/* Report successful completion */
+	dw1000_tx_complete(dw);
+}
+
+/**
+ * dw1000_tx_complete() - Complete transmission
+ *
+ * @dw:			DW1000 device
+ */
+static void dw1000_tx_complete(struct dw1000 *dw)
+{
+	struct dw1000_tx *tx = &dw->tx;
+	struct sk_buff *skb;
+	size_t sifs_max_len;
+
+	/* Report completion to IEEE 802.15.4 stack */
+	skb = tx->skb;
+	tx->skb = NULL;
+	sifs_max_len = (IEEE802154_MAX_SIFS_FRAME_SIZE - IEEE802154_FCS_LEN);
+	ieee802154_xmit_complete(dw->hw, skb, (skb->len <= sifs_max_len));
 }
 
 /******************************************************************************
@@ -1101,50 +1135,7 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
  */
 
 /**
- * dw1000_rx() - Receive packet
- *
- * @dw:			DW1000 device
- */
-static void dw1000_rx(struct dw1000 *dw)
-{
-	struct sk_buff *skb;
-	struct dw1000_rx *rx = &dw->rx;
-	size_t len;
-	int rc;
-
-	/* Read frame information */
-	if ((rc = regmap_read(dw->rx_finfo.regs, 0, &rx->finfo)) != 0)
-		goto abort;
-
-	/* Allocate socket buffer */
-	len = DW1000_RX_FINFO_RXFLEN(rx->finfo);
-	skb = dev_alloc_skb(len);
-	if (!skb) {
-		rc = -ENOMEM;
-		goto abort;
-	}
-	skb_put(skb, len);
-
-	/* Construct receive descriptor */
-	rx->skb = skb;
-	rx->rx_buffer.data.rx_buf = skb->data;
-	rx->rx_buffer.data.len = len;
-
-	/* Post receive descriptor */
-	if ((rc = spi_sync(dw->spi, &rx->msg)) != 0)
-		goto abort;
-
-	/* Hand off to IEEE 802.15.4 stack */
-	ieee802154_rx_irqsafe(dw->hw, skb, 0); // TODO: lqi
-
-	return;
-
- abort:
-	dev_err(dw->dev, "receive failed: %d\n", rc);
-}
-
-/**
- * dw1000_rx_prepare() - Prepare receive descriptor
+ * dw1000_rx_prepare() - Prepare receive SPI messages
  *
  * @dw:			DW1000 device
  * @return:		0 on success or -errno
@@ -1154,18 +1145,67 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 	static const uint8_t hrbpt = DW1000_SYS_CTRL3_HRBPT;
 	struct dw1000_rx *rx = &dw->rx;
 
-	/* Prepare receive descriptor */
+	/* Initialise receive descriptor */
 	memset(rx, 0, sizeof(*rx));
-	spi_message_init_no_memset(&rx->msg);
-	// TODO: async RX
-	//rx->msg.complete = dw1000_rx_spi_complete;
-	//rx->msg.context = dw;
-	dw1000_init_read(&rx->msg, &rx->rx_buffer, DW1000_RX_BUFFER, 0,
+
+	/* Prepare information SPI message */
+	spi_message_init_no_memset(&rx->info);
+	dw1000_init_read(&rx->info, &rx->rx_finfo, DW1000_RX_FINFO, 0,
+			 &rx->finfo, sizeof(rx->finfo));
+	dw1000_init_read(&rx->info, &rx->rx_stamp, DW1000_RX_TIME,
+			 DW1000_RX_STAMP, &rx->time, sizeof(rx->time));
+
+	/* Prepare data SPI message */
+	spi_message_init_no_memset(&rx->data);
+	dw1000_init_read(&rx->data, &rx->rx_buffer, DW1000_RX_BUFFER, 0,
 			 NULL, 0);
-	dw1000_init_write(&rx->msg, &rx->sys_ctrl, DW1000_SYS_CTRL,
+	dw1000_init_write(&rx->data, &rx->sys_ctrl, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL3, &hrbpt, sizeof(hrbpt));
 
 	return 0;
+}
+
+/**
+ * dw1000_rx_dfr() - Handle Receiver Data Frame Ready (RXDFR) event
+ *
+ * @dw:			DW1000 device
+ */
+static void dw1000_rx_dfr(struct dw1000 *dw)
+{
+	struct dw1000_rx *rx = &dw->rx;
+	struct sk_buff *skb;
+	uint32_t finfo;
+	size_t len;
+	int rc;
+
+	/* Send information SPI message */
+	if ((rc = spi_sync(dw->spi, &rx->info)) != 0) {
+		dev_err(dw->dev, "RX information message failed: %d\n", rc);
+		return;
+	}
+	finfo = le32_to_cpu(rx->finfo);
+
+	/* Allocate socket buffer */
+	len = DW1000_RX_FINFO_RXFLEN(finfo);
+	skb = dev_alloc_skb(len);
+	if (!skb) {
+		dev_err(dw->dev, "RX buffer allocation failed\n");
+		return;
+	}
+	skb_put(skb, len);
+
+	/* Update data SPI message */
+	rx->rx_buffer.data.rx_buf = skb->data;
+	rx->rx_buffer.data.len = len;
+
+	/* Send data SPI message */
+	if ((rc = spi_sync(dw->spi, &rx->data)) != 0) {
+		dev_err(dw->dev, "RX data message failed: %d\n", rc);
+		return;
+	}
+
+	/* Hand off to IEEE 802.15.4 stack */
+	ieee802154_rx_irqsafe(dw->hw, skb, 0); // TODO: lqi
 }
 
 /******************************************************************************
@@ -1208,17 +1248,11 @@ static void dw1000_irq_worker(struct work_struct *work)
 
 	/* Handle transmit completion, if applicable */
 	if (sys_status & DW1000_SYS_STATUS_TXFRS)
-		dw1000_tx_complete(dw);
+		dw1000_tx_frs(dw);
 
 	/* Handle received packet, if applicable */
 	if (sys_status & DW1000_SYS_STATUS_RXDFR)
-		dw1000_rx(dw);
-
-	// do NOT clear RXDFR explicitly
-
-	/* Acknowledge interrupts */
-	if ((rc = regmap_write(dw->sys_status.regs, 0, sys_status)) != 0)
-		goto abort;
+		dw1000_rx_dfr(dw);
 
  abort:
 	enable_irq(dw->spi->irq);

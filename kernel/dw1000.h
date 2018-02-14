@@ -72,6 +72,11 @@ struct dw1000_spi_transfers {
 	struct spi_transfer data;
 };
 
+/* Timestamp format */
+struct dw1000_timestamp {
+	uint8_t byte[5];
+} __packed;
+
 /* Register files */
 #define DW1000_DEV_ID		0x00
 #define DW1000_DEV_ID_LEN	4
@@ -221,9 +226,18 @@ struct dw1000_dev_id {
 #define DW1000_SYS_STATUS_RXDFR			0x00002000UL
 #define DW1000_SYS_STATUS_ICRBP			0x80000000UL
 #define DW1000_SYS_STATUS_HSRBP			0x40000000UL
+#define DW1000_SYS_STATUS0		0x00
+#define DW1000_SYS_STATUS0_TXFRS		0x80
 
 /* Receive frame information register */
 #define DW1000_RX_FINFO_RXFLEN(val)		(((val) >> 0) & 0x7ff)
+
+/* Receive time stamp registers */
+#define DW1000_RX_STAMP			0x00
+
+/* Transmit time stamp registers */
+#define DW1000_TX_STAMP			0x00
+#define DW1000_TX_RAWST			0x05
 
 /* Channel control register */
 #define DW1000_CHAN_CTRL_TX_CHAN(n)		((n) << 0)
@@ -414,33 +428,52 @@ struct dw1000_regmap {
 struct dw1000_tx {
 	/* Socket buffer */
 	struct sk_buff *skb;
+
 	/* Length */
 	uint8_t len;
-	/* SPI message submission has completed */
-	bool submitted;
-	/* SPI message */
-	struct spi_message msg;
-	/* SPI transfers for data buffer */
+	/* Timestamp */
+	struct dw1000_timestamp time;
+
+	/* Data SPI message */
+	struct spi_message data;
+	/* Data buffer SPI transfer set */
 	struct dw1000_spi_transfers tx_buffer;
-	/* SPI transfers for frame control */
+	/* Frame control SPI transfer set */
 	struct dw1000_spi_transfers tx_fctrl;
-	/* SPI transfers for RX disable */
+	/* RX disable SPI transfer set */
 	struct dw1000_spi_transfers sys_ctrl_trxoff;
-	/* SPI transfers for TX start */
+	/* TX start SPI transfer set */
 	struct dw1000_spi_transfers sys_ctrl_txstrt;
+	/* Data SPI message has completed */
+	bool data_complete;
+
+	/* Information SPI message */
+	struct spi_message info;
+	/* Timestamp SPI transfer set */
+	struct dw1000_spi_transfers tx_time;
+	/* IRQ acknowledgement SPI transfer set */
+	struct dw1000_spi_transfers sys_status;
 };
 
 /* Receive descriptor */
 struct dw1000_rx {
-	/* Socket buffer */
-	struct sk_buff *skb;
 	/* Frame information */
-	int finfo;
-	/* SPI message */
-	struct spi_message msg;
-	/* SPI transfers for data buffer */
+	uint32_t finfo;
+	/* Timestamp */
+	struct dw1000_timestamp time;
+
+	/* Information SPI message */
+	struct spi_message info;
+	/* Frame information SPI transfer set */
+	struct dw1000_spi_transfers rx_finfo;
+	/* Timestamp SPI transfer set */
+	struct dw1000_spi_transfers rx_stamp;
+
+	/* Data SPI message */
+	struct spi_message data;
+	/* Data buffer SPI transfer set */
 	struct dw1000_spi_transfers rx_buffer;
-	/* SPI transfers for buffer toggle */
+	/* Host buffer toggle SPI transfer set */
 	struct dw1000_spi_transfers sys_ctrl;
 };
 
