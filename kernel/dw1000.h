@@ -212,9 +212,15 @@ struct dw1000_dev_id {
 #define DW1000_SYS_CTRL3		0x03
 #define DW1000_SYS_CTRL3_HRBPT			0x01
 
-/* Interrupt mask and status registers */
-#define DW1000_IRQ_TXFRS			0x00000080UL
-#define DW1000_IRQ_RXDFR			0x00002000UL
+/* System event mask register */
+#define DW1000_SYS_MASK_MTXFRS			0x00000080UL
+#define DW1000_SYS_MASK_MRXDFR			0x00002000UL
+
+/* System event status register */
+#define DW1000_SYS_STATUS_TXFRS			0x00000080UL
+#define DW1000_SYS_STATUS_RXDFR			0x00002000UL
+#define DW1000_SYS_STATUS_ICRBP			0x80000000UL
+#define DW1000_SYS_STATUS_HSRBP			0x40000000UL
 
 /* Receive frame information register */
 #define DW1000_RX_FINFO_RXFLEN(val)		(((val) >> 0) & 0x7ff)

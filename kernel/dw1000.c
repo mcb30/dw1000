@@ -1199,23 +1199,25 @@ static irqreturn_t dw1000_isr(int irq, void *context)
 static void dw1000_irq_worker(struct work_struct *work)
 {
 	struct dw1000 *dw = container_of(work, struct dw1000, irq_work);
-	int status;
+	int sys_status;
 	int rc;
 
 	/* Read interrupt status register */
-	if ((rc = regmap_read(dw->sys_status.regs, 0, &status)) != 0)
+	if ((rc = regmap_read(dw->sys_status.regs, 0, &sys_status)) != 0)
 		goto abort;
 
 	/* Handle transmit completion, if applicable */
-	if (status & DW1000_IRQ_TXFRS)
+	if (sys_status & DW1000_SYS_STATUS_TXFRS)
 		dw1000_tx_complete(dw);
 
 	/* Handle received packet, if applicable */
-	if (status & DW1000_IRQ_RXDFR)
+	if (sys_status & DW1000_SYS_STATUS_RXDFR)
 		dw1000_rx(dw);
 
+	// do NOT clear RXDFR explicitly
+
 	/* Acknowledge interrupts */
-	if ((rc = regmap_write(dw->sys_status.regs, 0, status)) != 0)
+	if ((rc = regmap_write(dw->sys_status.regs, 0, sys_status)) != 0)
 		goto abort;
 
  abort:
@@ -1237,11 +1239,24 @@ static void dw1000_irq_worker(struct work_struct *work)
 static int dw1000_start(struct ieee802154_hw *hw)
 {
 	struct dw1000 *dw = hw->priv;
+	int sys_status;
 	int rc;
+
+	/* Ensure that HSRBP and ICRBP are in sync */
+	if ((rc = regmap_read(dw->sys_status.regs, 0, &sys_status)) != 0)
+		goto err_sys_status;
+	if ((!!(sys_status & DW1000_SYS_STATUS_HSRBP)) ^
+	    (!!(sys_status & DW1000_SYS_STATUS_ICRBP))) {
+		dev_info(dw->dev, "resyncing HSRBP\n");
+		if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
+				       DW1000_SYS_CTRL3_HRBPT)) != 0)
+			goto err_sys_ctrl3;
+	}
 
 	/* Enable interrupt generation */
 	if ((rc = regmap_write(dw->sys_mask.regs, 0,
-			       (DW1000_IRQ_TXFRS | DW1000_IRQ_RXDFR))) != 0)
+			       (DW1000_SYS_MASK_MTXFRS |
+				DW1000_SYS_MASK_MRXDFR))) != 0)
 		goto err_sys_mask;
 
 	/* Enable receiver */
@@ -1257,6 +1272,8 @@ static int dw1000_start(struct ieee802154_hw *hw)
  err_sys_ctrl1:
 	regmap_write(dw->sys_mask.regs, 0, 0);
  err_sys_mask:
+ err_sys_ctrl3:
+ err_sys_status:
 	return rc;
 }
 
