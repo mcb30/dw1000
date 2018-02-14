@@ -1276,6 +1276,18 @@ static int dw1000_start(struct ieee802154_hw *hw)
 	int sys_status;
 	int rc;
 
+	/* Prepare transmit descriptor */
+	if ((rc = dw1000_tx_prepare(dw)) != 0) {
+		dev_err(dw->dev, "TX preparation failed: %d\n", rc);
+		goto err_tx_prepare;
+	}
+
+	/* Prepare receive descriptor */
+	if ((rc = dw1000_rx_prepare(dw)) != 0) {
+		dev_err(dw->dev, "RX preparation failed: %d\n", rc);
+		goto err_rx_prepare;
+	}
+
 	/* Ensure that HSRBP and ICRBP are in sync */
 	if ((rc = regmap_read(dw->sys_status.regs, 0, &sys_status)) != 0)
 		goto err_sys_status;
@@ -1308,6 +1320,8 @@ static int dw1000_start(struct ieee802154_hw *hw)
  err_sys_mask:
  err_sys_ctrl3:
  err_sys_status:
+ err_rx_prepare:
+ err_tx_prepare:
 	return rc;
 }
 
@@ -1892,18 +1906,6 @@ static int dw1000_probe(struct spi_device *spi)
 		goto err_init;
 	}
 
-	/* Prepare transmit descriptor */
-	if ((rc = dw1000_tx_prepare(dw)) != 0) {
-		dev_err(dw->dev, "TX preparation failed: %d\n", rc);
-		goto err_tx_prepare;
-	}
-
-	/* Prepare receive descriptor */
-	if ((rc = dw1000_rx_prepare(dw)) != 0) {
-		dev_err(dw->dev, "RX preparation failed: %d\n", rc);
-		goto err_rx_prepare;
-	}
-
 	/* Add attribute group */
 	if ((rc = sysfs_create_group(&dw->dev->kobj, &dw1000_attr_group)) != 0){
 		dev_err(dw->dev, "could not create attributes: %d\n", rc);
@@ -1932,8 +1934,6 @@ static int dw1000_probe(struct spi_device *spi)
  err_request_irq:
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
  err_create_group:
- err_rx_prepare:
- err_tx_prepare:
  err_init:
  err_reset:
  err_regmap_init:
