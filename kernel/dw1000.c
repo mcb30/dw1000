@@ -1617,6 +1617,13 @@ static int dw1000_init(struct dw1000 *dw)
 	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, mask, value)) != 0)
 		return rc;
 
+	/* Configure crystal trim to midpoint */
+	mask = DW1000_FS_XTALT_XTALT_MASK;
+	value = DW1000_FS_XTALT_XTALT_MIDPOINT;
+	if ((rc = regmap_update_bits(dw->fs_ctrl.regs, DW1000_FS_XTALT,
+				     mask, value)) != 0)
+		return rc;
+
 	/* Handle short inter-frame gaps in hardware */
 	value = DW1000_TX_FCTRL4_IFSDELAY(IEEE802154_SIFS_PERIOD);
 	if ((rc = regmap_write(dw->tx_fctrl.regs, DW1000_TX_FCTRL4,

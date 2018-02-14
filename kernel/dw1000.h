@@ -260,6 +260,10 @@ struct dw1000_dev_id {
 /* Frequency synthesiser control registers */
 #define DW1000_FS_PLLCFG		0x07
 #define DW1000_FS_PLLTUNE		0x0b
+#define DW1000_FS_XTALT			0x0e
+#define DW1000_FS_XTALT_XTALT(n)		((n) << 0)
+#define DW1000_FS_XTALT_XTALT_MIDPOINT		DW1000_FS_XTALT_XTALT(0x10)
+#define DW1000_FS_XTALT_XTALT_MASK		DW1000_FS_XTALT_XTALT(0x1f)
 
 /* One-time programmable memory interface registers */
 #define DW1000_OTP_CTRL			0x06
