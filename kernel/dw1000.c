@@ -305,7 +305,7 @@ static const struct regmap_bus dw1000_regmap_bus = {
 			__VA_ARGS__					\
 		},							\
 	}
-DW1000_REGMAP(dev_id, DW1000_DEV_ID, DW1000_DEV_ID_LEN, uint32_t);
+DW1000_REGMAP(dev_id, DW1000_DEV_ID, DW1000_DEV_ID_LEN, uint16_t);
 DW1000_REGMAP(eui, DW1000_EUI, DW1000_EUI_LEN, uint8_t);
 DW1000_REGMAP(panadr, DW1000_PANADR, DW1000_PANADR_LEN, uint16_t);
 DW1000_REGMAP(sys_cfg, DW1000_SYS_CFG, DW1000_SYS_CFG_LEN, uint32_t);
@@ -1752,23 +1752,23 @@ static struct attribute_group dw1000_attr_group = {
  * the DW1000 device is present and responding to commands.
  *
  * @dw:			DW1000 device
- * @id:			Device ID to fill in
  * @return:		0 on success or -errno
  */
-static int dw1000_check_dev_id(struct dw1000 *dw, struct dw1000_dev_id *id)
+static int dw1000_check_dev_id(struct dw1000 *dw)
 {
+	int ridtag;
 	int rc;
 
 	/* Read device ID */
-	if ((rc = dw1000_read(dw, DW1000_DEV_ID, 0, id, sizeof(*id))) != 0) {
+	if ((rc = regmap_read(dw->dev_id.regs, DW1000_RIDTAG, &ridtag)) != 0) {
 		dev_err(dw->dev, "could not read device ID: %d\n", rc);
 		return rc;
 	}
 
 	/* Check register ID tag */
-	if (id->ridtag != cpu_to_le16(DW1000_RIDTAG_MAGIC)) {
+	if (ridtag != DW1000_RIDTAG_MAGIC) {
 		dev_err(dw->dev, "incorrect RID tag %04X (expected %04X)\n",
-			le16_to_cpu(id->ridtag), DW1000_RIDTAG_MAGIC);
+			ridtag, DW1000_RIDTAG_MAGIC);
 		return -EINVAL;
 	}
 
@@ -1783,17 +1783,14 @@ static int dw1000_check_dev_id(struct dw1000 *dw, struct dw1000_dev_id *id)
  */
 static int dw1000_reset(struct dw1000 *dw)
 {
-	struct dw1000_dev_id id;
 	int rc;
 
 	/* Force slow SPI clock speed */
 	dw->spi->max_speed_hz = DW1000_SPI_SLOW_HZ;
 
 	/* Read device ID register */
-	if ((rc = dw1000_check_dev_id(dw, &id)) != 0)
+	if ((rc = dw1000_check_dev_id(dw)) != 0)
 		return rc;
-	dev_info(dw->dev, "found %04X model %02X version %02X\n",
-		 le16_to_cpu(id.ridtag), id.model, id.ver_rev);
 
 	/* Force system clock to 19.2 MHz XTI clock */
 	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
@@ -1813,14 +1810,14 @@ static int dw1000_reset(struct dw1000 *dw)
 		return rc;
 
 	/* Recheck device ID to ensure bus is still operational */
-	if ((rc = dw1000_check_dev_id(dw, &id)) != 0)
+	if ((rc = dw1000_check_dev_id(dw)) != 0)
 		return rc;
 
 	/* Switch to full SPI clock speed */
 	dw->spi->max_speed_hz = DW1000_SPI_FAST_HZ;
 
 	/* Recheck device ID to ensure bus is still operational */
-	if ((rc = dw1000_check_dev_id(dw, &id)) != 0)
+	if ((rc = dw1000_check_dev_id(dw)) != 0)
 		return rc;
 
 	return 0;
@@ -1867,7 +1864,6 @@ static int dw1000_load_otp(struct dw1000 *dw)
  */
 static int dw1000_load_lde(struct dw1000 *dw)
 {
-	struct dw1000_dev_id id;
 	int rc;
 
 	/* Force slow SPI clock speed */
@@ -1902,7 +1898,7 @@ static int dw1000_load_lde(struct dw1000 *dw)
 	dw->spi->max_speed_hz = DW1000_SPI_FAST_HZ;
 
 	/* Recheck device ID to ensure bus is still operational */
-	if ((rc = dw1000_check_dev_id(dw, &id)) != 0)
+	if ((rc = dw1000_check_dev_id(dw)) != 0)
 		return rc;
 
 	return 0;
@@ -1916,10 +1912,20 @@ static int dw1000_load_lde(struct dw1000 *dw)
  */
 static int dw1000_init(struct dw1000 *dw)
 {
+	int modelverrev;
 	int sys_cfg_filters;
 	int mask;
 	int value;
 	int rc;
+
+	/* Log device ID */
+	if ((rc = regmap_read(dw->dev_id.regs, DW1000_MODELVERREV,
+			      &modelverrev)) != 0)
+		return rc;
+	dev_info(dw->dev, "found model %d.%d.%d\n",
+		 DW1000_MODELVERREV_MODEL(modelverrev),
+		 DW1000_MODELVERREV_VER(modelverrev),
+		 DW1000_MODELVERREV_REV(modelverrev));
 
 	/* Set system configuration:
 	 *

@@ -168,17 +168,12 @@ union dw1000_ldotune {
 #define DW1000_PMSC		0x36
 #define DW1000_PMSC_LEN		48
 
-/* Device ID register file layout */
-struct dw1000_dev_id {
-	/* Version and revision */
-	uint8_t ver_rev;
-	/* Model */
-	uint8_t model;
-	/* Register identification tag */
-	uint16_t ridtag;
-} __packed;
-
-/* Expected register identification tag */
+/* Device ID registers */
+#define DW1000_MODELVERREV		0x00
+#define DW1000_MODELVERREV_MODEL(val)		(((val) >> 8) & 0xff)
+#define DW1000_MODELVERREV_VER(val)		(((val) >> 4) & 0x0f)
+#define DW1000_MODELVERREV_REV(val)		(((val) >> 0) & 0x0f)
+#define DW1000_RIDTAG			0x02
 #define DW1000_RIDTAG_MAGIC			0xdeca
 
 /* PAN address registers */
