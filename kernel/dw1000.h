@@ -77,6 +77,17 @@ struct dw1000_timestamp {
 	uint8_t byte[5];
 } __packed;
 
+/* LDO tuning register format */
+union dw1000_ldotune {
+	/* OTP values */
+	struct {
+		__le32 lo;
+		__le32 hi;
+	} __packed otp;
+	/* Register value */
+	uint8_t value[5];
+};
+
 /* Register files */
 #define DW1000_DEV_ID		0x00
 #define DW1000_DEV_ID_LEN	4
@@ -277,6 +288,7 @@ struct dw1000_dev_id {
 /* Analog RF configuration registers */
 #define DW1000_RF_RXCTRLH		0x0b
 #define DW1000_RF_TXCTRL		0x0c
+#define DW1000_RF_LDOTUNE		0x30
 
 /* Transmitter calibration registers */
 #define DW1000_TC_PGDELAY		0x0b
@@ -324,6 +336,10 @@ struct dw1000_dev_id {
 #define DW1000_PMSC_LEDC_BLINK_TIM_DEFAULT	DW1000_PMSC_LEDC_BLINK_TIM(0x01)
 #define DW1000_PMSC_LEDC_BLINK_TIM_MASK		DW1000_PMSC_LEDC_BLINK_TIM(0xff)
 #define DW1000_PMSC_LEDC_BLNKEN			0x00000100UL
+
+/* OTP layout */
+#define DW1000_OTP_LDOTUNE_LO		0x004
+#define DW1000_OTP_LDOTUNE_HI		0x005
 
 /* Time required for OTP read to complete */
 #define DW1000_OTP_WAIT_MIN_US 150

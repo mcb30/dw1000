@@ -1827,6 +1827,39 @@ static int dw1000_reset(struct dw1000 *dw)
 }
 
 /**
+ * dw1000_load_otp() - Load calibration values from OTP
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_load_otp(struct dw1000 *dw)
+{
+	union dw1000_ldotune ldotune;
+	int rc;
+
+	/* Read LDOTUNE calibration value */
+	if ((rc = regmap_read(dw->otp, DW1000_OTP_LDOTUNE_LO,
+			      &ldotune.otp.lo)) != 0)
+		return rc;
+	if ((rc = regmap_read(dw->otp, DW1000_OTP_LDOTUNE_HI,
+			      &ldotune.otp.hi)) != 0)
+		return rc;
+
+	/* Apply LDOTUNE calibration value, if applicable */
+	if (ldotune.otp.lo) {
+		dev_info(dw->dev, "setting LDOTUNE 0x%02x%08x\n",
+			 le32_to_cpu(ldotune.otp.hi),
+			 le32_to_cpu(ldotune.otp.lo));
+		if ((rc = regmap_raw_write(dw->rf_conf.regs, DW1000_RF_LDOTUNE,
+					   &ldotune.value,
+					   sizeof(ldotune.value))) != 0)
+		    return rc;
+	}
+
+	return 0;
+}
+
+/**
  * dw1000_load_lde() - Load leading edge detection microcode
  *
  * @dw:			DW1000 device
@@ -1952,6 +1985,10 @@ static int dw1000_init(struct dw1000 *dw)
 	value = DW1000_EVC_CTRL_EVC_EN;
 	if ((rc = regmap_update_bits(dw->dig_diag.regs, DW1000_EVC_CTRL,
 				     mask, value)) != 0)
+		return rc;
+
+	/* Load calibration values from OTP */
+	if ((rc = dw1000_load_otp(dw)) != 0)
 		return rc;
 
 	/* Load LDE microcode */
