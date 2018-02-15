@@ -1565,7 +1565,7 @@ static int dw1000_set_cca_mode(struct ieee802154_hw *hw,
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(dw->dev, "setting CCA mode\n");
+	dev_info(dw->dev, "set CCA mode\n");
 	return 0;
 }
 
@@ -1573,7 +1573,7 @@ static int dw1000_set_cca_ed_level(struct ieee802154_hw *hw, s32 mbm)
 {
 	struct dw1000 *dw = hw->priv;
 
-	dev_info(dw->dev, "setting CCA ED level %d\n", mbm);
+	dev_info(dw->dev, "set CCA ED level %d\n", mbm);
 	return 0;
 }
 
@@ -1859,7 +1859,7 @@ static int dw1000_load_ldotune(struct dw1000 *dw)
 
 	/* Apply LDOTUNE calibration value, if applicable */
 	if (ldotune.raw[0]) {
-		dev_info(dw->dev, "setting LDOTUNE %02x:%02x:%02x:%02x:%02x\n",
+		dev_info(dw->dev, "set LDOTUNE %02x:%02x:%02x:%02x:%02x\n",
 			 ldotune.raw[4], ldotune.raw[3], ldotune.raw[2],
 			 ldotune.raw[1], ldotune.raw[0]);
 		if ((rc = regmap_raw_write(dw->rf_conf.regs, DW1000_RF_LDOTUNE,
