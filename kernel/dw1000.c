@@ -421,6 +421,122 @@ static int dw1000_regmap_init(struct dw1000 *dw)
 
 /******************************************************************************
  *
+ * One-time programmable memory (OTP) access
+ *
+ */
+
+/**
+ * dw1000_otp_read() - Read from one-time programmable memory
+ *
+ * @dw:			DW1000 device
+ * @address:		OTP address
+ * @data:		Data to fill in
+ * @return:		0 on success or -errno
+ */
+static int dw1000_otp_read(struct dw1000 *dw, unsigned int address,
+			   __le32 *data) {
+	int otp_ctrl;
+	int rc;
+
+	/* Set OTP address */
+	if ((rc = regmap_write(dw->otp_if.regs, DW1000_OTP_ADDR, address)) != 0)
+		return rc;
+
+	/* Initiate read */
+	otp_ctrl = (DW1000_OTP_CTRL_OTPRDEN | DW1000_OTP_CTRL_OTPREAD);
+	if ((rc = regmap_write(dw->otp_if.regs, DW1000_OTP_CTRL,
+			       otp_ctrl)) != 0)
+		return rc;
+
+	/* Wait for read to complete */
+	usleep_range(DW1000_OTP_WAIT_MIN_US, DW1000_OTP_WAIT_MAX_US);
+
+	/* Check that read has completed */
+	if ((rc = regmap_read(dw->otp_if.regs, DW1000_OTP_CTRL,
+			      &otp_ctrl)) != 0)
+		return rc;
+	if (otp_ctrl & DW1000_OTP_CTRL_OTPREAD) {
+		dev_err(dw->dev, "OTP read timed out\n");
+		return -ETIMEDOUT;
+	}
+
+	/* Read data */
+	if ((rc = regmap_raw_read(dw->otp_if.regs, DW1000_OTP_RDAT, data,
+				  sizeof(*data))) != 0)
+		return rc;
+
+	/* Terminate read */
+	if ((rc = regmap_write(dw->otp_if.regs, DW1000_OTP_CTRL, 0)) != 0)
+		return rc;
+
+	return 0;
+}
+
+/**
+ * dw1000_otp_reg_read() - Read OTP register(s)
+ *
+ * @context:		DW1000 register map
+ * @reg:		Buffer containing register offset
+ * @reg_len:		Length of register offset
+ * @val:		Buffer to contain raw register value
+ * @val_len:		Length of raw register value
+ * @return:		0 on success or -errno
+ */
+static int dw1000_otp_reg_read(void *context, unsigned int reg,
+			       unsigned int *val)
+{
+	struct dw1000 *dw = context;
+	__le32 data;
+	int rc;
+
+	/* Read register */
+	if ((rc = dw1000_otp_read(dw, reg, &data)) != 0)
+		return rc;
+
+	/* Convert value */
+	*val = le32_to_cpu(data);
+
+	return 0;
+}
+
+/* OTP register map bus */
+static const struct regmap_bus dw1000_otp_regmap_bus = {
+	.reg_read = dw1000_otp_reg_read,
+	.reg_format_endian_default = REGMAP_ENDIAN_NATIVE,
+	.val_format_endian_default = REGMAP_ENDIAN_NATIVE,
+};
+
+/* OTP register map configuration */
+static const struct regmap_config dw1000_otp_regmap_config = {
+	.name = "otp",
+	.val_bits = 32,
+	.max_register = 0x1f,
+};
+
+/**
+ * dw1000_otp_regmap_init() - Initialise OTP register map
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_otp_regmap_init(struct dw1000 *dw)
+{
+	int rc;
+
+	/* Initialise register maps */
+	dw->otp = devm_regmap_init(dw->dev, &dw1000_otp_regmap_bus, dw,
+				   &dw1000_otp_regmap_config);
+	if (IS_ERR(dw->otp)) {
+		rc = PTR_ERR(dw->otp);
+		dev_err(dw->dev, "could not allocate OTP map: %d\n", rc);
+		return rc;
+	}
+
+	return 0;
+}
+
+/******************************************************************************
+ *
  * Radio configuration
  *
  * All magic register values are taken directly from the datasheet.
@@ -1892,9 +2008,11 @@ static int dw1000_probe(struct spi_device *spi)
 	hw->phy->current_page = DW1000_CHANNEL_PAGE;
 	hw->phy->current_channel = DW1000_CHANNEL_DEFAULT;
 
-	/* Initialise register map */
+	/* Initialise register maps */
 	if ((rc = dw1000_regmap_init(dw)) != 0)
 		goto err_regmap_init;
+	if ((rc = dw1000_otp_regmap_init(dw)) != 0)
+		goto err_otp_regmap_init;
 
 	/* Reset device */
 	if ((rc = dw1000_reset(dw)) != 0) {
@@ -1938,6 +2056,7 @@ static int dw1000_probe(struct spi_device *spi)
  err_create_group:
  err_init:
  err_reset:
+ err_otp_regmap_init:
  err_regmap_init:
 	ieee802154_free_hw(hw);
  err_alloc_hw:

@@ -290,8 +290,12 @@ struct dw1000_dev_id {
 #define DW1000_FS_XTALT_XTALT_MASK		DW1000_FS_XTALT_XTALT(0x1f)
 
 /* One-time programmable memory interface registers */
+#define DW1000_OTP_ADDR			0x04
 #define DW1000_OTP_CTRL			0x06
+#define DW1000_OTP_CTRL_OTPRDEN			0x0001
+#define DW1000_OTP_CTRL_OTPREAD			0x0002
 #define DW1000_OTP_CTRL_LDELOAD			0x8000
+#define DW1000_OTP_RDAT			0x0a
 
 /* Leading edge detection interface registers */
 #define DW1000_LDE_CFG2			0x1806
@@ -320,6 +324,10 @@ struct dw1000_dev_id {
 #define DW1000_PMSC_LEDC_BLINK_TIM_DEFAULT	DW1000_PMSC_LEDC_BLINK_TIM(0x01)
 #define DW1000_PMSC_LEDC_BLINK_TIM_MASK		DW1000_PMSC_LEDC_BLINK_TIM(0xff)
 #define DW1000_PMSC_LEDC_BLNKEN			0x00000100UL
+
+/* Time required for OTP read to complete */
+#define DW1000_OTP_WAIT_MIN_US 150
+#define DW1000_OTP_WAIT_MAX_US 500
 
 /* Time required for LDE microcode load to complete */
 #define DW1000_LDELOAD_WAIT_MIN_US 150
@@ -528,6 +536,9 @@ struct dw1000 {
 	struct dw1000_regmap lde_if;
 	struct dw1000_regmap dig_diag;
 	struct dw1000_regmap pmsc;
+
+	/* One-time programmable memory */
+	struct regmap *otp;
 
 	/* Channel number */
 	unsigned int channel;
