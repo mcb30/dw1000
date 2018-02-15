@@ -72,6 +72,16 @@ struct dw1000_spi_transfers {
 	struct spi_transfer data;
 };
 
+/* EUI-64 extended address format */
+union dw1000_eui64 {
+	/* OTP values */
+	uint32_t otp[2];
+	/* Raw bytes */
+	uint8_t raw[8];
+	/* IEEE 802.15.4 EUI-64 address */
+	__le64 addr;
+};
+
 /* Timestamp format */
 struct dw1000_timestamp {
 	uint8_t byte[5];
@@ -80,12 +90,9 @@ struct dw1000_timestamp {
 /* LDO tuning register format */
 union dw1000_ldotune {
 	/* OTP values */
-	struct {
-		__le32 lo;
-		__le32 hi;
-	} __packed otp;
-	/* Register value */
-	uint8_t value[5];
+	uint32_t otp[2];
+	/* Raw bytes */
+	uint8_t raw[5];
 };
 
 /* Register files */
@@ -333,8 +340,8 @@ union dw1000_ldotune {
 #define DW1000_PMSC_LEDC_BLNKEN			0x00000100UL
 
 /* OTP layout */
-#define DW1000_OTP_LDOTUNE_LO		0x004
-#define DW1000_OTP_LDOTUNE_HI		0x005
+#define DW1000_OTP_EUI64		0x000
+#define DW1000_OTP_LDOTUNE		0x004
 
 /* Time required for OTP read to complete */
 #define DW1000_OTP_WAIT_MIN_US 150

@@ -1824,33 +1824,92 @@ static int dw1000_reset(struct dw1000 *dw)
 }
 
 /**
- * dw1000_load_otp() - Load calibration values from OTP
+ * dw1000_load_ldotune() - Load LDOTUNE calibration value
  *
  * @dw:			DW1000 device
  * @return:		0 on success or -errno
  */
-static int dw1000_load_otp(struct dw1000 *dw)
+static int dw1000_load_ldotune(struct dw1000 *dw)
 {
 	union dw1000_ldotune ldotune;
+	const uint8_t *of_ldotune;
+	unsigned int i;
+	int len;
 	int rc;
 
-	/* Read LDOTUNE calibration value */
-	if ((rc = regmap_read(dw->otp, DW1000_OTP_LDOTUNE_LO,
-			      &ldotune.otp.lo)) != 0)
+	/* Read LDOTUNE calibration value from OTP */
+	if ((rc = regmap_bulk_read(dw->otp, DW1000_OTP_LDOTUNE, ldotune.otp,
+				   ARRAY_SIZE(ldotune.otp))) != 0)
 		return rc;
-	if ((rc = regmap_read(dw->otp, DW1000_OTP_LDOTUNE_HI,
-			      &ldotune.otp.hi)) != 0)
-		return rc;
+	for (i = 0; i < ARRAY_SIZE(ldotune.otp); i++)
+		cpu_to_le32s(ldotune.otp[i]);
+
+	/* Read LDOTUNE calibration value from devicetree */
+	of_ldotune = of_get_property(dw->dev->of_node, "decawave,ldotune",
+				     &len);
+	if (of_ldotune) {
+		if (len == sizeof(ldotune.raw)) {
+			for (i = 0; i < len; i++)
+				ldotune.raw[i] = of_ldotune[len - i - 1];
+		} else {
+			dev_err(dw->dev, "invalid decawave,ldotune length %d\n",
+				len);
+		}
+	}
 
 	/* Apply LDOTUNE calibration value, if applicable */
-	if (ldotune.otp.lo) {
-		dev_info(dw->dev, "setting LDOTUNE 0x%02x%08x\n",
-			 le32_to_cpu(ldotune.otp.hi),
-			 le32_to_cpu(ldotune.otp.lo));
+	if (ldotune.raw[0]) {
+		dev_info(dw->dev, "setting LDOTUNE %02x:%02x:%02x:%02x:%02x\n",
+			 ldotune.raw[4], ldotune.raw[3], ldotune.raw[2],
+			 ldotune.raw[1], ldotune.raw[0]);
 		if ((rc = regmap_raw_write(dw->rf_conf.regs, DW1000_RF_LDOTUNE,
-					   &ldotune.value,
-					   sizeof(ldotune.value))) != 0)
+					   &ldotune.raw,
+					   sizeof(ldotune.raw))) != 0)
 		    return rc;
+	}
+
+	return 0;
+}
+
+/**
+ * dw1000_load_eui64() - Load EUI-64 extended address
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_load_eui64(struct dw1000 *dw)
+{
+	union dw1000_eui64 eui64;
+	const uint8_t *of_eui64;
+	unsigned int i;
+	int len;
+	int rc;
+
+	/* Read EUI-64 address from OTP */
+	if ((rc = regmap_bulk_read(dw->otp, DW1000_OTP_EUI64, eui64.otp,
+				   ARRAY_SIZE(eui64.otp))) != 0)
+		return rc;
+	for (i = 0; i < ARRAY_SIZE(eui64.otp); i++)
+		cpu_to_le32s(eui64.otp[i]);
+
+	/* Read EUI-64 address from devicetree */
+	of_eui64 = of_get_property(dw->dev->of_node, "decawave,eui64", &len);
+	if (of_eui64) {
+		if (len == sizeof(eui64.raw)) {
+			for (i = 0; i < len; i++)
+				eui64.raw[i] = of_eui64[len - i - 1];
+		} else {
+			dev_err(dw->dev, "invalid decawave,eui64 length %d\n",
+				len);
+		}
+	}
+
+	/* Use EUI-64 address if valid, otherwise generate random address */
+	if (ieee802154_is_valid_extended_unicast_addr(eui64.addr)) {
+		dw->phy->perm_extended_addr = eui64.addr;
+	} else {
+		dev_warn(dw->dev, "has no permanent EUI-64 address\n");
+		ieee802154_random_extended_addr(&dw->phy->perm_extended_addr);
 	}
 
 	return 0;
@@ -1993,8 +2052,12 @@ static int dw1000_init(struct dw1000 *dw)
 				     mask, value)) != 0)
 		return rc;
 
-	/* Load calibration values from OTP */
-	if ((rc = dw1000_load_otp(dw)) != 0)
+	/* Load LDOTUNE calibration value */
+	if ((rc = dw1000_load_ldotune(dw)) != 0)
+		return rc;
+
+	/* Load EUI-64 address */
+	if ((rc = dw1000_load_eui64(dw)) != 0)
 		return rc;
 
 	/* Load LDE microcode */
@@ -2004,9 +2067,6 @@ static int dw1000_init(struct dw1000 *dw)
 	/* Configure radio */
 	if ((rc = dw1000_reconfigure(dw, -1U)) != 0)
 		return rc;
-
-	/* Generate a random extended address */
-	ieee802154_random_extended_addr(&dw->phy->perm_extended_addr);
 
 	return 0;
 }
