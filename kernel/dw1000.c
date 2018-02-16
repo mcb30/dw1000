@@ -300,7 +300,7 @@ static const struct regmap_bus dw1000_regmap_bus = {
 			.name = #_name,					\
 			.reg_bits = DW1000_REG_BITS,			\
 			.reg_stride = sizeof(_type),			\
-			.val_bits = (8 * sizeof(_type)),		\
+			.val_bits = (sizeof(_type) * BITS_PER_BYTE),	\
 			.max_register = ((_len) - sizeof(_type)),	\
 			__VA_ARGS__					\
 		},							\
@@ -1092,6 +1092,254 @@ static int dw1000_configure_smart_power(struct dw1000 *dw, bool smart_power)
 
 /******************************************************************************
  *
+ * PTP hardware clock
+ *
+ */
+
+/**
+ * dw1000_cc_read() - Read underlying cycle counter
+ *
+ * @cc:			Cycle counter
+ * @return:		Cycle count
+ */
+static uint64_t dw1000_ptp_cc_read(const struct cyclecounter *cc)
+{
+	struct dw1000 *dw = container_of(cc, struct dw1000, ptp.cc);
+	union dw1000_timestamp time;
+	int rc;
+
+	/* The documentation does not state whether or not reads from
+	 * the SYS_TIME register are atomic.  At the rated 20MHz SPI
+	 * bus speed, reading all 5 bytes will take 2us.  During this
+	 * time the SYS_TIME value should have been incremented (in
+	 * units of 512) around 250 times.
+	 *
+	 * We assume that Decawave has taken this problem into account
+	 * and caused SYS_TIME reads to return a snapshot of the
+	 * complete 40-bit timer at the point that the read was
+	 * initiated.
+	 *
+	 * Use a low-level read to avoid any potential for the regmap
+	 * abstraction layer deciding to split the read into multiple
+	 * SPI transactions.
+	 */
+	time.cc = 0;
+	if ((rc = dw1000_read(dw, DW1000_SYS_TIME, 0, &time.raw,
+			      sizeof(time.raw))) != 0) {
+		dev_err(dw->dev, "could not read timestamp: %d\n", rc);
+		/* There is no way to indicate failure here */
+		return 0;
+	}
+
+	return le64_to_cpu(time.cc);
+}
+
+/**
+ * dw1000_ptp_worker() - Clock wraparound detection worker
+ *
+ * @work:		Worker
+ */
+static void dw1000_ptp_worker(struct work_struct *work)
+{
+	struct dw1000 *dw = container_of(to_delayed_work(work),
+					 struct dw1000, ptp_work);
+
+	/* Read timecounter; this must be done at least once per wraparound */
+	mutex_lock(&dw->ptp.mutex);
+	timecounter_read(&dw->ptp.tc);
+	mutex_unlock(&dw->ptp.mutex);
+
+	/* Reschedule worker */
+	schedule_delayed_work(&dw->ptp_work, DW1000_PTP_WORK_DELAY);
+}
+
+/**
+ * dw1000_ptp_adjfreq() - Adjust frequency of hardware clock
+ *
+ * @ptp:		PTP clock information
+ * @delta:		Frequency offset in parts per billion
+ * @return:		0 on success or -errno
+ */
+static int dw1000_ptp_adjfreq(struct ptp_clock_info *ptp, int32_t delta)
+{
+	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
+	uint64_t delta_mult;
+	uint32_t mult;
+	bool negate;
+
+	/* Split out sign to allow for unsigned division */
+	if (delta < 0) {
+		delta = -delta;
+		negate = true;
+	} else {
+		negate = false;
+	}
+
+	/* Calculate multiplier value */
+	delta_mult = delta;
+	delta_mult *= DW1000_CYCLECOUNTER_MULT;
+	delta_mult = div_u64(delta_mult, 1000000000UL); /* ppb */
+	mult = (negate ? (DW1000_CYCLECOUNTER_MULT - delta_mult) :
+		(DW1000_CYCLECOUNTER_MULT + delta_mult));
+	dev_dbg(dw->dev, "adjust frequency %+d ppb: multiplier %d->%d\n",
+		delta, DW1000_CYCLECOUNTER_MULT, mult);
+
+	/* Read timecounter to establish a baseline point at which the
+	 * frequency changes (i.e. to synchronise the cycle and
+	 * nanosecond counts), then adjust the multiplier.
+	 */
+	mutex_lock(&dw->ptp.mutex);
+	timecounter_read(&dw->ptp.tc);
+	dw->ptp.cc.mult = mult;
+	mutex_unlock(&dw->ptp.mutex);
+
+	return 0;
+}
+
+/**
+ * dw1000_ptp_adjtime() - Adjust time of hardware clock
+ *
+ * @ptp:		PTP clock information
+ * @delta:		Change in nanoseconds
+ * @return:		0 on success or -errno
+ */
+static int dw1000_ptp_adjtime(struct ptp_clock_info *ptp, int64_t delta)
+{
+	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
+
+	/* Adjust timecounter */
+	mutex_lock(&dw->ptp.mutex);
+	timecounter_adjtime(&dw->ptp.tc, delta);
+	mutex_unlock(&dw->ptp.mutex);
+
+	return 0;
+}
+
+/**
+ * dw1000_ptp_gettime() - Get time of hardware clock
+ *
+ * @ptp:		PTP clock information
+ * @ts:			Time to fill in
+ * @return:		0 on sucess or -errno
+ */
+static int dw1000_ptp_gettime(struct ptp_clock_info *ptp,
+			      struct timespec64 *ts)
+{
+	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
+	uint64_t ns;
+
+	/* Read timecounter */
+	mutex_lock(&dw->ptp.mutex);
+	ns = timecounter_read(&dw->ptp.tc);
+	mutex_unlock(&dw->ptp.mutex);
+
+	/* Convert to timespec */
+	*ts = ns_to_timespec64(ns);
+
+	return 0;
+}
+
+/**
+ * dw1000_ptp_settime() - Set time of hardware clock
+ *
+ * @ptp:		PTP clock information
+ * @ts:			Time
+ * @return:		0 on sucess or -errno
+ */
+static int dw1000_ptp_settime(struct ptp_clock_info *ptp,
+			      const struct timespec64 *ts)
+{
+	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
+	uint64_t ns;
+
+	/* Convert to nanoseconds */
+	ns = timespec64_to_ns(ts);
+
+	/* Reinitialise timecounter */
+	mutex_lock(&dw->ptp.mutex);
+	timecounter_init(&dw->ptp.tc, &dw->ptp.cc, ns);
+	mutex_unlock(&dw->ptp.mutex);
+
+	return 0;
+}
+
+/**
+ * dw1000_ptp_enable() - Enable/disable feature
+ *
+ * @ptp:		PTP clock information
+ * @request:		Feature request
+ * @on:			Enable/disable feature
+ * @return:		0 on success or -errno
+ */
+static int dw1000_ptp_enable(struct ptp_clock_info *ptp,
+			     struct ptp_clock_request *request, int on)
+{
+	/* No additional features supported */
+	return -EOPNOTSUPP;
+}
+
+/**
+ * dw1000_ptp_init() - Initialise PTP clock
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_ptp_init(struct dw1000 *dw)
+{
+	struct cyclecounter *cc = &dw->ptp.cc;
+	struct timecounter *tc = &dw->ptp.tc;
+	struct ptp_clock_info *info = &dw->ptp.info;
+
+	/* Initialise mutex */
+	mutex_init(&dw->ptp.mutex);
+
+	/* Initialise cycle counter */
+	cc->read = dw1000_ptp_cc_read;
+	cc->mask = DW1000_CYCLECOUNTER_MASK;
+	cc->mult = DW1000_CYCLECOUNTER_MULT;
+	cc->shift = DW1000_CYCLECOUNTER_SHIFT;
+
+	/* Initialise time counter */
+	timecounter_init(tc, cc, ktime_to_ns(ktime_get_real()));
+
+	/* Initialise PTP clock information */
+	info->owner = THIS_MODULE;
+	info->max_adj = DW1000_PTP_MAX_ADJ;
+	snprintf(info->name, sizeof(info->name), "%s", dev_name(dw->dev));
+	info->adjfreq = dw1000_ptp_adjfreq;
+	info->adjtime = dw1000_ptp_adjtime;
+	info->gettime64 = dw1000_ptp_gettime;
+	info->settime64 = dw1000_ptp_settime;
+	info->enable = dw1000_ptp_enable;
+
+	return 0;
+}
+
+/**
+ * dw1000_timestamp() - Convert DW1000 timestamp to kernel timestamp
+ *
+ * @dw:			DW1000 device
+ * @time:		DW1000 timestamp
+ * @hwtstamps:		Kernel hardware timestamp
+ */
+static void dw1000_timestamp(struct dw1000 *dw,
+			     const union dw1000_timestamp *time,
+			     struct skb_shared_hwtstamps *hwtstamps)
+{
+	uint64_t ns;
+
+	/* Convert timestamp to nanoseconds */
+	mutex_lock(&dw->ptp.mutex);
+	ns = timecounter_cyc2time(&dw->ptp.tc, le64_to_cpu(time->cc));
+	mutex_unlock(&dw->ptp.mutex);
+
+	/* Fill in kernel hardware timestamp */
+	memset(hwtstamps, 0, sizeof(*hwtstamps));
+	hwtstamps->hwtstamp = ns_to_ktime(ns);
+}
+
+/******************************************************************************
+ *
  * Transmit datapath
  *
  */
@@ -1132,7 +1380,7 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
 	/* Prepare information SPI message */
 	spi_message_init_no_memset(&tx->info);
 	dw1000_init_read(&tx->info, &tx->tx_time, DW1000_TX_TIME,
-			 DW1000_TX_STAMP, &tx->time, sizeof(tx->time));
+			 DW1000_TX_STAMP, &tx->time.raw, sizeof(tx->time.raw));
 	dw1000_init_write(&tx->info, &tx->sys_status, DW1000_SYS_STATUS,
 			  DW1000_SYS_STATUS0, &txfrs, sizeof(txfrs));
 
@@ -1165,6 +1413,11 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 	tx->tx_buffer.data.len = skb->len;
 	tx->len = DW1000_TX_FCTRL0_TFLEN(skb->len + IEEE802154_FCS_LEN);
 	tx->data_complete = false;
+
+	/* Prepare timestamping */
+	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP))
+		skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
+	skb_tx_timestamp(skb);
 
 	/* Initiate data SPI message */
 	if ((rc = spi_async(dw->spi, &tx->data)) != 0)
@@ -1207,6 +1460,7 @@ static void dw1000_tx_data_complete(void *context)
 static void dw1000_tx_frs(struct dw1000 *dw)
 {
 	struct dw1000_tx *tx = &dw->tx;
+	struct skb_shared_hwtstamps hwtstamps;
 	int rc;
 
 	/* Ignore if data SPI message has not yet completed */
@@ -1221,6 +1475,10 @@ static void dw1000_tx_frs(struct dw1000 *dw)
 		dw1000_tx_complete(dw);
 		return;
 	}
+
+	/* Record hardware timestamp */
+	dw1000_timestamp(dw, &tx->time, &hwtstamps);
+	skb_tstamp_tx(tx->skb, &hwtstamps);
 
 	/* Report successful completion */
 	dw1000_tx_complete(dw);
@@ -1269,7 +1527,7 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 	dw1000_init_read(&rx->info, &rx->rx_finfo, DW1000_RX_FINFO, 0,
 			 &rx->finfo, sizeof(rx->finfo));
 	dw1000_init_read(&rx->info, &rx->rx_stamp, DW1000_RX_TIME,
-			 DW1000_RX_STAMP, &rx->time, sizeof(rx->time));
+			 DW1000_RX_STAMP, &rx->time.raw, sizeof(rx->time.raw));
 
 	/* Prepare data SPI message */
 	spi_message_init_no_memset(&rx->data);
@@ -1309,6 +1567,9 @@ static void dw1000_rx_dfr(struct dw1000 *dw)
 		return;
 	}
 	skb_put(skb, len);
+
+	/* Record hardware timestamp */
+	dw1000_timestamp(dw, &rx->time, skb_hwtstamps(skb));
 
 	/* Update data SPI message */
 	rx->rx_buffer.data.rx_buf = skb->data;
@@ -2068,6 +2329,10 @@ static int dw1000_init(struct dw1000 *dw)
 	if ((rc = dw1000_reconfigure(dw, -1U)) != 0)
 		return rc;
 
+	/* Initialise PTP clock */
+	if ((rc = dw1000_ptp_init(dw)) != 0)
+		return rc;
+
 	return 0;
 }
 
@@ -2100,6 +2365,7 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->rate = DW1000_RATE_6800K;
 	dw->smart_power = true;
 	INIT_WORK(&dw->irq_work, dw1000_irq_worker);
+	INIT_DELAYED_WORK(&dw->ptp_work, dw1000_ptp_worker);
 	hw->parent = &spi->dev;
 
 	/* Report capabilities */
@@ -2143,6 +2409,17 @@ static int dw1000_probe(struct spi_device *spi)
 		goto err_request_irq;
 	}
 
+	/* Start timer wraparound check worker */
+	schedule_delayed_work(&dw->ptp_work, DW1000_PTP_WORK_DELAY);
+
+	/* Register PTP clock */
+	dw->ptp.clock = ptp_clock_register(&dw->ptp.info, dw->dev);
+	if (IS_ERR(dw->ptp.clock)) {
+		rc = PTR_ERR(dw->ptp.clock);
+		dev_err(dw->dev, "could not register PTP clock: %d\n", rc);
+		goto err_register_ptp;
+	}
+
 	/* Register IEEE 802.15.4 device */
 	if ((rc = ieee802154_register_hw(hw)) != 0) {
 		dev_err(dw->dev, "could not register: %d\n", rc);
@@ -2154,6 +2431,9 @@ static int dw1000_probe(struct spi_device *spi)
 
 	ieee802154_unregister_hw(hw);
  err_register_hw:
+	ptp_clock_unregister(dw->ptp.clock);
+ err_register_ptp:
+	cancel_delayed_work_sync(&dw->ptp_work);
  err_request_irq:
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
  err_create_group:
@@ -2178,6 +2458,8 @@ static int dw1000_remove(struct spi_device *spi)
 	struct dw1000 *dw = hw->priv;
 
 	ieee802154_unregister_hw(hw);
+	ptp_clock_unregister(dw->ptp.clock);
+	cancel_delayed_work_sync(&dw->ptp_work);
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
 	dw1000_reset(dw);
 	ieee802154_free_hw(hw);
