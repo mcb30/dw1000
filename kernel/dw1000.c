@@ -1461,6 +1461,7 @@ static void dw1000_tx_frs(struct dw1000 *dw)
 {
 	struct dw1000_tx *tx = &dw->tx;
 	struct skb_shared_hwtstamps hwtstamps;
+	struct sk_buff *skb;
 	int rc;
 
 	/* Ignore if data SPI message has not yet completed */
@@ -1476,9 +1477,12 @@ static void dw1000_tx_frs(struct dw1000 *dw)
 		return;
 	}
 
-	/* Record hardware timestamp */
-	dw1000_timestamp(dw, &tx->time, &hwtstamps);
-	skb_tstamp_tx(tx->skb, &hwtstamps);
+	/* Record hardware timestamp, if applicable */
+	skb = tx->skb;
+	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_IN_PROGRESS)) {
+		dw1000_timestamp(dw, &tx->time, &hwtstamps);
+		skb_tstamp_tx(skb, &hwtstamps);
+	}
 
 	/* Report successful completion */
 	dw1000_tx_complete(dw);
