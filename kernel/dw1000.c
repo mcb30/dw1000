@@ -1182,7 +1182,7 @@ static int dw1000_ptp_adjfreq(struct ptp_clock_info *ptp, int32_t delta)
 	mult = (negate ? (DW1000_CYCLECOUNTER_MULT - delta_mult) :
 		(DW1000_CYCLECOUNTER_MULT + delta_mult));
 	dev_dbg(dw->dev, "adjust frequency %+d ppb: multiplier %d->%d\n",
-		delta, DW1000_CYCLECOUNTER_MULT, mult);
+		(negate ? -delta : delta), DW1000_CYCLECOUNTER_MULT, mult);
 
 	/* Read timecounter to establish a baseline point at which the
 	 * frequency changes (i.e. to synchronise the cycle and
