@@ -1742,12 +1742,41 @@ static void dw1000_stop(struct ieee802154_hw *hw)
 	dev_info(dw->dev, "stopped\n");
 }
 
+/**
+ * dw1000_ed() - Detect energy on current radio channel
+ *
+ * @hw:			IEEE 802.15.4 device
+ * @level:		Energy level to fill in (in arbitrary units)
+ * @return:		0 on success or -errno
+ */
 static int dw1000_ed(struct ieee802154_hw *hw, u8 *level)
 {
 	struct dw1000 *dw = hw->priv;
+	__le32 agc_stat1 = 0;
+	unsigned int edg1;
+	unsigned int edv2;
+	int rc;
 
-	dev_info(dw->dev, "detecting energy\n");
-	*level = 0;
+	/* Read AGC_STAT1 register */
+	if ((rc = regmap_raw_read(dw->agc_ctrl.regs, DW1000_AGC_STAT1,
+				  &agc_stat1, DW1000_AGC_STAT1_LEN)) != 0)
+		return rc;
+
+	/* Calculate energy level as per datasheet.  Given the limited
+	 * range available for the answer, we use a logarithmic scale
+	 * and some approximations.
+	 */
+	edg1 = DW1000_AGC_STAT1_EDG1(le32_to_cpu(agc_stat1));
+	edv2 = DW1000_AGC_STAT1_EDV2(le32_to_cpu(agc_stat1));
+	if (edv2 < DW1000_EDV2_MIN) {
+		*level = 0;
+	} else {
+		*level = (fls(edv2 - DW1000_EDV2_MIN) +
+			  ((edg1 * DW1000_EDG1_MULT) >> DW1000_EDG1_SHIFT));
+	}
+
+	dev_dbg(dw->dev, "detected energy level %d on channel %d (EDG1=%d, "
+		"EDV2=%d)\n", *level, dw->phy->current_channel, edg1, edv2);
 	return 0;
 }
 
@@ -1834,23 +1863,6 @@ static int dw1000_set_hw_addr_filt(struct ieee802154_hw *hw,
 	return 0;
 }
 
-static int dw1000_set_cca_mode(struct ieee802154_hw *hw,
-			       const struct wpan_phy_cca *cca)
-{
-	struct dw1000 *dw = hw->priv;
-
-	dev_info(dw->dev, "set CCA mode\n");
-	return 0;
-}
-
-static int dw1000_set_cca_ed_level(struct ieee802154_hw *hw, s32 mbm)
-{
-	struct dw1000 *dw = hw->priv;
-
-	dev_info(dw->dev, "set CCA ED level %d\n", mbm);
-	return 0;
-}
-
 /**
  * dw1000_set_promiscuous_mode() - Enable/disable promiscuous mode
  *
@@ -1881,8 +1893,6 @@ static const struct ieee802154_ops dw1000_ops = {
 	.ed = dw1000_ed,
 	.set_channel = dw1000_set_channel,
 	.set_hw_addr_filt = dw1000_set_hw_addr_filt,
-	.set_cca_mode = dw1000_set_cca_mode,
-	.set_cca_ed_level = dw1000_set_cca_ed_level,
 	.set_promiscuous_mode = dw1000_set_promiscuous_mode,
 };
 

@@ -274,6 +274,10 @@ union dw1000_ldotune {
 #define DW1000_AGC_TUNE1		0x04
 #define DW1000_AGC_TUNE2		0x0c
 #define DW1000_AGC_TUNE3		0x12
+#define DW1000_AGC_STAT1		0x1e
+#define DW1000_AGC_STAT1_LEN		3
+#define DW1000_AGC_STAT1_EDG1(val)		(((val) >> 6) & 0x1f)
+#define DW1000_AGC_STAT1_EDV2(val)		(((val) >> 11) & 0x1ff)
 
 /* GPIO control registers */
 #define DW1000_GPIO_MODE		0x00
@@ -403,6 +407,11 @@ union dw1000_ldotune {
 
 /* Cycle counter wraparound check interval: well within 17.2074 seconds */
 #define DW1000_PTP_WORK_DELAY (3 * HZ)
+
+/* Energy detection calculation constants */
+#define DW1000_EDV2_MIN 40
+#define DW1000_EDG1_MULT 3400
+#define DW1000_EDG1_SHIFT 10
 
 /* Pulse repetition frequencies */
 enum dw1000_prf {
