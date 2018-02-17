@@ -1131,7 +1131,7 @@ static uint64_t dw1000_ptp_cc_read(const struct cyclecounter *cc)
 		return 0;
 	}
 
-	return le64_to_cpu(time.cc);
+	return (le64_to_cpu(time.cc) >> DW1000_CYCLECOUNTER_FRAC_SHIFT);
 }
 
 /**
@@ -1181,7 +1181,7 @@ static int dw1000_ptp_adjfreq(struct ptp_clock_info *ptp, int32_t delta)
 	delta_mult = div_u64(delta_mult, 1000000000UL); /* ppb */
 	mult = (negate ? (DW1000_CYCLECOUNTER_MULT - delta_mult) :
 		(DW1000_CYCLECOUNTER_MULT + delta_mult));
-	dev_dbg(dw->dev, "adjust frequency %+d ppb: multiplier %d->%d\n",
+	dev_dbg(dw->dev, "adjust frequency %+d ppb: multiplier %u->%u\n",
 		(negate ? -delta : delta), DW1000_CYCLECOUNTER_MULT, mult);
 
 	/* Read timecounter to establish a baseline point at which the
@@ -1326,11 +1326,20 @@ static void dw1000_timestamp(struct dw1000 *dw,
 			     const union dw1000_timestamp *time,
 			     struct skb_shared_hwtstamps *hwtstamps)
 {
+	uint64_t cc;
+	uint32_t cc_frac;
 	uint64_t ns;
+	uint64_t adjust;
 
 	/* Convert timestamp to nanoseconds */
 	mutex_lock(&dw->ptp.mutex);
-	ns = timecounter_cyc2time(&dw->ptp.tc, le64_to_cpu(time->cc));
+	cc = le64_to_cpu(time->cc);
+	cc_frac = (cc & ((1 << DW1000_CYCLECOUNTER_FRAC_SHIFT) - 1));
+	cc >>= DW1000_CYCLECOUNTER_FRAC_SHIFT;
+	ns = timecounter_cyc2time(&dw->ptp.tc, cc);
+	adjust = (((uint64_t)cc_frac * dw->ptp.cc.mult) >>
+		  (DW1000_CYCLECOUNTER_SHIFT + DW1000_CYCLECOUNTER_FRAC_SHIFT));
+	ns += adjust;
 	mutex_unlock(&dw->ptp.mutex);
 
 	/* Fill in kernel hardware timestamp */

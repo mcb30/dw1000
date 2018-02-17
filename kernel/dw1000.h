@@ -357,15 +357,44 @@ union dw1000_ldotune {
 #define DW1000_LDELOAD_WAIT_MIN_US 150
 #define DW1000_LDELOAD_WAIT_MAX_US 500
 
-/* Cycle counter parameters: 40-bit counter, nominal rate 63.8976GHz */
-#define DW1000_CYCLECOUNTER_MASK CYCLECOUNTER_MASK(40)
-#define DW1000_CYCLECOUNTER_MULT 8402051 /* Maximum 24-bit multiplier */
-#define DW1000_CYCLECOUNTER_SHIFT 29 /* Scale down to nanoseconds */
+/* Cycle counter parameters
+ *
+ * The DW1000 uses a 40-bit counter running at a nominal 63.8976GHz
+ * (128x the 499.2MHz UWB base frequency).  The counter is actually
+ * incremented in units of 512 at 124.8MHz; higher resolution on the
+ * receive timestamps is achieved within the chip via a Leading Edge
+ * Detection (LDE) algorithm run for each received packet.
+ * (Transmitted packets are synchronised to the 124.8MHz clock
+ * anyway.)
+ *
+ * There is no provision in hardware for varying the reported
+ * frequency (e.g. via a fractional tick count scaling register as
+ * with most other PTP-supporting network adapters).  We therefore use
+ * the cycle counter multiplier for frequency tuning.
+ *
+ * Using the full 40-bit counter value would limit us to a 24-bit
+ * multiplier (in order to stay within the constraints of a 64-bit
+ * result).  This is sufficient to express adjustments down to a
+ * resolution of only around 60ppb.
+ *
+ * We therefore choose to report only the upper 31 actively counting
+ * bits of the nominal 40-bit counter.  This allows for a 33-bit
+ * multiplier (limited to 32 bits to avoid a 64x64 multiplication) and
+ * hence for frequency adjustments down to around 0.25ppb, without
+ * sacrificing any precision in timestamps read directly from the
+ * SYS_TIME register.  For transmit and receive timestamps, we handle
+ * the fractional portion of the timestamp (from the lower 9
+ * LDE-calculated bits) as an additional correction.
+ */
+#define DW1000_CYCLECOUNTER_FRAC_SHIFT 9
+#define DW1000_CYCLECOUNTER_MASK CYCLECOUNTER_MASK(31)
+#define DW1000_CYCLECOUNTER_MULT 2150925128U /* Maximum 32-bit multiplier */
+#define DW1000_CYCLECOUNTER_SHIFT 28 /* Scale down to nanoseconds */
 
 /* Maximum multiplier adjustment
  *
  * This represents the maximum change that can be made to the cycle
- * counter multiplier without exceeding the 24-bit range, expressed as
+ * counter multiplier without exceeding the 32-bit range, expressed as
  * parts per billion of the original multiplier value.  Some margin is
  * provided to allow for the various conversion factors used in
  * calculations.
