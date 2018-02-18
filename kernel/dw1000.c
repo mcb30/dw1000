@@ -1212,6 +1212,7 @@ static int dw1000_ptp_adjtime(struct ptp_clock_info *ptp, int64_t delta)
 	timecounter_adjtime(&dw->ptp.tc, delta);
 	mutex_unlock(&dw->ptp.mutex);
 
+	dev_dbg(dw->dev, "adjust time %+lld ns\n", delta);
 	return 0;
 }
 
@@ -1260,6 +1261,7 @@ static int dw1000_ptp_settime(struct ptp_clock_info *ptp,
 	timecounter_init(&dw->ptp.tc, &dw->ptp.cc, ns);
 	mutex_unlock(&dw->ptp.mutex);
 
+	dev_dbg(dw->dev, "set time %llu ns\n", ns);
 	return 0;
 }
 
