@@ -322,6 +322,7 @@ union dw1000_ldotune {
 #define DW1000_OTP_RDAT			0x0a
 
 /* Leading edge detection interface registers */
+#define DW1000_LDE_RXANTD		0x1804
 #define DW1000_LDE_CFG2			0x1806
 #define DW1000_LDE_REPC			0x2804
 
@@ -352,6 +353,9 @@ union dw1000_ldotune {
 /* OTP layout */
 #define DW1000_OTP_EUI64		0x000
 #define DW1000_OTP_LDOTUNE		0x004
+#define DW1000_OTP_DELAYS		0x01c
+#define DW1000_OTP_DELAYS_16M(val)		(((val) >> 0) & 0xffff)
+#define DW1000_OTP_DELAYS_64M(val)		(((val) >> 16) & 0xffff)
 
 /* Time required for OTP read to complete */
 #define DW1000_OTP_WAIT_MIN_US 150
@@ -633,6 +637,9 @@ struct dw1000 {
 
 	/* One-time programmable memory */
 	struct regmap *otp;
+
+	/* Antenna delays */
+	uint16_t antd[DW1000_PRF_COUNT];
 
 	/* Channel number */
 	unsigned int channel;

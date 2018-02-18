@@ -775,6 +775,7 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	const struct dw1000_fixed_config *fixed_cfg;
 	uint8_t tx_power[sizeof(channel_cfg->tx_power[0])];
 	uint16_t lde_repc;
+	uint16_t lde_rxantd;
 	unsigned int channel;
 	unsigned int pcode;
 	enum dw1000_prf prf;
@@ -835,6 +836,13 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 		if ((rc = regmap_update_bits(dw->tx_fctrl.regs,
 					     DW1000_TX_FCTRL2,
 					     mask, value)) != 0)
+			return rc;
+	}
+
+	/* TX_ANTD register */
+	if (changed & DW1000_CONFIGURE_PRF) {
+		if ((rc = regmap_write(dw->tx_antd.regs, 0,
+				       dw->antd[prf])) != 0)
 			return rc;
 	}
 
@@ -947,6 +955,11 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 
 	/* LDE_IF registers */
 	if (changed & DW1000_CONFIGURE_PRF) {
+		lde_rxantd = cpu_to_le16(dw->antd[prf]);
+		if ((rc = regmap_raw_write(dw->lde_if.regs, DW1000_LDE_RXANTD,
+					   &lde_rxantd,
+					   sizeof(lde_rxantd))) != 0)
+			return rc;
 		if ((rc = regmap_raw_write(dw->lde_if.regs, DW1000_LDE_CFG2,
 					   prf_cfg->lde_cfg2,
 					   sizeof(prf_cfg->lde_cfg2))) != 0)
@@ -2202,6 +2215,30 @@ static int dw1000_load_eui64(struct dw1000 *dw)
 }
 
 /**
+ * dw1000_load_delays() - Load antenna delays
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_load_delays(struct dw1000 *dw)
+{
+	int delays;
+	int rc;
+
+	/* Read delays from OTP */
+	if ((rc = regmap_read(dw->otp, DW1000_OTP_DELAYS, &delays)) != 0)
+		return rc;
+	dw->antd[DW1000_PRF_16M] = DW1000_OTP_DELAYS_16M(delays);
+	dw->antd[DW1000_PRF_64M] = DW1000_OTP_DELAYS_64M(delays);
+
+	/* Read delays from devicetree */
+	of_property_read_u16_array(dw->dev->of_node, "decawave,antd",
+				   dw->antd, ARRAY_SIZE(dw->antd));
+
+	return 0;
+}
+
+/**
  * dw1000_load_lde() - Load leading edge detection microcode
  *
  * @dw:			DW1000 device
@@ -2344,6 +2381,10 @@ static int dw1000_init(struct dw1000 *dw)
 
 	/* Load EUI-64 address */
 	if ((rc = dw1000_load_eui64(dw)) != 0)
+		return rc;
+
+	/* Load antenna delays */
+	if ((rc = dw1000_load_delays(dw)) != 0)
 		return rc;
 
 	/* Load LDE microcode */
