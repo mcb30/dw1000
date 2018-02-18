@@ -1144,7 +1144,7 @@ static void dw1000_ptp_worker(struct work_struct *work)
 	struct dw1000 *dw = container_of(to_delayed_work(work),
 					 struct dw1000, ptp_work);
 
-	/* Read timecounter; this must be done at least once per wraparound */
+	/* Read timecounter; this must be done at least twice per wraparound */
 	mutex_lock(&dw->ptp.mutex);
 	timecounter_read(&dw->ptp.tc);
 	mutex_unlock(&dw->ptp.mutex);
