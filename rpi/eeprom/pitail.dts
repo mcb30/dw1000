@@ -80,6 +80,7 @@
 				interrupt-parent = <&gpio>;
 				interrupts = <25 4>;
 				spi-max-frequency = <20000000>;
+				decawave,eui64 = /bits/ 64 <EUI64>;
 			};
 		};
 	};
