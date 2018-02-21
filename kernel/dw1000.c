@@ -1913,6 +1913,145 @@ static const struct ieee802154_ops dw1000_ops = {
 
 /******************************************************************************
  *
+ * Hardware monitor
+ *
+ */
+
+/**
+ * dw1000_hwmon_is_visible() - Check attribute visibility
+ *
+ * @drvdata:		DW1000 device
+ * @type:		Sensor type
+ * @attr:		Sensor attribute
+ * @channel:		Channel number
+ * @return:		File mode
+ */
+static umode_t dw1000_hwmon_is_visible(const void *drvdata,
+				       enum hwmon_sensor_types type,
+				       uint32_t attr, int channel)
+{
+	/* All attributes are read-only */
+	return 0444;
+}
+
+/**
+ * dw1000_hwmon_read() - Read attribute
+ *
+ * @dev:		Hardware monitor device
+ * @type:		Sensor type
+ * @attr:		Sensor attribute
+ * @channel:		Channel number
+ * @val:		Value to fill in
+ * @return:		0 on success or -errno
+ */
+static int dw1000_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
+			     uint32_t attr, int channel, long *val)
+{
+	struct dw1000 *dw = dev_get_drvdata(dev);
+	static const uint8_t hack_a1 = DW1000_RF_SENSOR_HACK_A1;
+	static const uint8_t hack_b1 = DW1000_RF_SENSOR_HACK_B1;
+	static const uint8_t hack_b2 = DW1000_RF_SENSOR_HACK_B2;
+	static const uint8_t sarc_on = DW1000_TC_SARC_CTRL;
+	static const uint8_t sarc_off = 0;
+	struct {
+		struct spi_message msg;
+		struct dw1000_spi_transfers hack_a1;
+		struct dw1000_spi_transfers hack_b1;
+		struct dw1000_spi_transfers hack_b2;
+		struct dw1000_spi_transfers sarc_on;
+		struct dw1000_spi_transfers sarc_off;
+		struct dw1000_spi_transfers sarl;
+	} spi;
+	uint8_t sarl;
+	int rc;
+
+	/* Construct SPI message */
+	memset(&spi, 0, sizeof(spi));
+	spi_message_init_no_memset(&spi.msg);
+	dw1000_init_write(&spi.msg, &spi.hack_a1, DW1000_RF_CONF,
+			  DW1000_RF_SENSOR_HACK_A, &hack_a1, sizeof(hack_a1));
+	dw1000_init_write(&spi.msg, &spi.hack_b1, DW1000_RF_CONF,
+			  DW1000_RF_SENSOR_HACK_B, &hack_b1, sizeof(hack_b1));
+	dw1000_init_write(&spi.msg, &spi.hack_b2, DW1000_RF_CONF,
+			  DW1000_RF_SENSOR_HACK_B, &hack_b2, sizeof(hack_b2));
+	dw1000_init_write(&spi.msg, &spi.sarc_on, DW1000_TX_CAL,
+			  DW1000_TC_SARC, &sarc_on, sizeof(sarc_on));
+	spi.sarc_on.data.delay_usecs = DW1000_SAR_WAIT_US;
+	dw1000_init_write(&spi.msg, &spi.sarc_off, DW1000_TX_CAL,
+			  DW1000_TC_SARC, &sarc_off, sizeof(sarc_off));
+	dw1000_init_read(&spi.msg, &spi.sarl, DW1000_TX_CAL,
+			 ((type == hwmon_in) ?
+			  DW1000_TC_SARL_LVBAT : DW1000_TC_SARL_LTEMP),
+			 &sarl, sizeof(sarl));
+
+	/* Send SPI message */
+	if ((rc = spi_sync(dw->spi, &spi.msg)) != 0)
+		return rc;
+
+	/* Convert result */
+	switch (type) {
+	case hwmon_in:
+		*val = DW1000_SAR_VBAT_MVOLT(sarl, dw->vmeas_3v3);
+		dev_dbg(dw->dev, "voltage %#x (%#x @ 3.3V) is %ldmV\n",
+			sarl, dw->vmeas_3v3, *val);
+		break;
+	case hwmon_temp:
+		*val = DW1000_SAR_TEMP_MDEGC(sarl, dw->tmeas_23c);
+		dev_dbg(dw->dev, "temperature %#x (%#x @ 23degC) is %ldmdegC\n",
+			sarl, dw->tmeas_23c, *val);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* Hardware monitor voltage configuration */
+static const uint32_t dw1000_in_config[] = {
+	HWMON_T_INPUT,
+	0
+};
+
+/* Hardware monitor voltage channel */
+static const struct hwmon_channel_info dw1000_in = {
+	.type = hwmon_in,
+	.config = dw1000_in_config,
+};
+
+/* Hardware monitor temperature configuration */
+static const uint32_t dw1000_temp_config[] = {
+	HWMON_T_INPUT,
+	0
+};
+
+/* Hardware monitor temperature channel */
+static const struct hwmon_channel_info dw1000_temp = {
+	.type = hwmon_temp,
+	.config = dw1000_temp_config,
+};
+
+/* Hardware monitor channels */
+static const struct hwmon_channel_info *dw1000_hwmon_channel[] = {
+	&dw1000_in,
+	&dw1000_temp,
+	NULL
+};
+
+/* Hardware monitor operations */
+static const struct hwmon_ops dw1000_hwmon_ops = {
+	.is_visible = dw1000_hwmon_is_visible,
+	.read = dw1000_hwmon_read,
+};
+
+/* Hardware monitor information */
+static const struct hwmon_chip_info dw1000_hwmon_chip = {
+	.info = dw1000_hwmon_channel,
+	.ops = &dw1000_hwmon_ops,
+};
+
+/******************************************************************************
+ *
  * Device attributes
  *
  */
@@ -2239,6 +2378,31 @@ static int dw1000_load_delays(struct dw1000 *dw)
 }
 
 /**
+ * dw1000_load_sar() - Load SAR ADC calibration values
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_load_sar(struct dw1000 *dw)
+{
+	int vmeas;
+	int tmeas;
+	int rc;
+
+	/* Read voltage measurement calibration from OTP */
+	if ((rc = regmap_read(dw->otp, DW1000_OTP_VMEAS, &vmeas)) != 0)
+		return rc;
+	dw->vmeas_3v3 = DW1000_OTP_VMEAS_3V3(vmeas);
+
+	/* Read temperature measurement calibration from OTP */
+	if ((rc = regmap_read(dw->otp, DW1000_OTP_TMEAS, &tmeas)) != 0)
+		return rc;
+	dw->tmeas_23c = DW1000_OTP_TMEAS_23C(tmeas);
+
+	return 0;
+}
+
+/**
  * dw1000_load_lde() - Load leading edge detection microcode
  *
  * @dw:			DW1000 device
@@ -2387,6 +2551,10 @@ static int dw1000_init(struct dw1000 *dw)
 	if ((rc = dw1000_load_delays(dw)) != 0)
 		return rc;
 
+	/* Load SAR ADC calibration values */
+	if ((rc = dw1000_load_sar(dw)) != 0)
+		return rc;
+
 	/* Load LDE microcode */
 	if ((rc = dw1000_load_lde(dw)) != 0)
 		return rc;
@@ -2486,6 +2654,16 @@ static int dw1000_probe(struct spi_device *spi)
 		goto err_register_ptp;
 	}
 
+	/* Register hardware monitor */
+	dw->hwmon = devm_hwmon_device_register_with_info(dw->dev, "dw1000", dw,
+							 &dw1000_hwmon_chip,
+							 NULL);
+	if (IS_ERR(dw->hwmon)) {
+		rc = PTR_ERR(dw->hwmon);
+		dev_err(dw->dev, "could not register hwmon: %d\n", rc);
+		goto err_register_hwmon;
+	}
+
 	/* Register IEEE 802.15.4 device */
 	if ((rc = ieee802154_register_hw(hw)) != 0) {
 		dev_err(dw->dev, "could not register: %d\n", rc);
@@ -2497,6 +2675,7 @@ static int dw1000_probe(struct spi_device *spi)
 
 	ieee802154_unregister_hw(hw);
  err_register_hw:
+ err_register_hwmon:
 	ptp_clock_unregister(dw->ptp.clock);
  err_register_ptp:
 	cancel_delayed_work_sync(&dw->ptp_work);

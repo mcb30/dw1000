@@ -29,6 +29,7 @@
 #include <linux/spi/spi.h>
 #include <linux/timecounter.h>
 #include <linux/ptp_clock_kernel.h>
+#include <linux/hwmon.h>
 
 /* Supported channel page (UWB only) */
 #define DW1000_CHANNEL_PAGE 4
@@ -300,9 +301,18 @@ union dw1000_ldotune {
 /* Analog RF configuration registers */
 #define DW1000_RF_RXCTRLH		0x0b
 #define DW1000_RF_TXCTRL		0x0c
+#define DW1000_RF_SENSOR_HACK_A		0x11
+#define DW1000_RF_SENSOR_HACK_A1		0x80
+#define DW1000_RF_SENSOR_HACK_B		0x12
+#define DW1000_RF_SENSOR_HACK_B1		0x0a
+#define DW1000_RF_SENSOR_HACK_B2		0x0f
 #define DW1000_RF_LDOTUNE		0x30
 
 /* Transmitter calibration registers */
+#define DW1000_TC_SARC			0x00
+#define DW1000_TC_SARC_CTRL			0x01
+#define DW1000_TC_SARL_LVBAT		0x03
+#define DW1000_TC_SARL_LTEMP		0x04
 #define DW1000_TC_PGDELAY		0x0b
 
 /* Frequency synthesiser control registers */
@@ -353,6 +363,10 @@ union dw1000_ldotune {
 /* OTP layout */
 #define DW1000_OTP_EUI64		0x000
 #define DW1000_OTP_LDOTUNE		0x004
+#define DW1000_OTP_VMEAS		0x008
+#define DW1000_OTP_VMEAS_3V3(val)		(((val) >> 0) & 0xff)
+#define DW1000_OTP_TMEAS		0x009
+#define DW1000_OTP_TMEAS_23C(val)		(((val) >> 0) & 0xff)
 #define DW1000_OTP_DELAYS		0x01c
 #define DW1000_OTP_DELAYS_16M(val)		(((val) >> 0) & 0xffff)
 #define DW1000_OTP_DELAYS_64M(val)		(((val) >> 16) & 0xffff)
@@ -364,6 +378,9 @@ union dw1000_ldotune {
 /* Time required for LDE microcode load to complete */
 #define DW1000_LDELOAD_WAIT_MIN_US 150
 #define DW1000_LDELOAD_WAIT_MAX_US 500
+
+/* Delay required for SAR ADC read */
+#define DW1000_SAR_WAIT_US 10
 
 /* Cycle counter parameters
  *
@@ -416,6 +433,12 @@ union dw1000_ldotune {
 #define DW1000_EDV2_MIN 40
 #define DW1000_EDG1_MULT 3400
 #define DW1000_EDG1_SHIFT 10
+
+/* SAR ADC conversions */
+#define DW1000_SAR_VBAT_MVOLT(sar, sar_3v3) \
+	(3300 + ((1000 * ((sar) - (sar_3v3))) / 173))
+#define DW1000_SAR_TEMP_MDEGC(sar, sar_23c) \
+	(23000 + ((100000 * ((sar) - (sar_23c)))) / 114)
 
 /* Pulse repetition frequencies */
 enum dw1000_prf {
@@ -640,6 +663,10 @@ struct dw1000 {
 
 	/* Antenna delays */
 	uint16_t antd[DW1000_PRF_COUNT];
+	/* Calibrated voltage measurement at 3.3V */
+	uint8_t vmeas_3v3;
+	/* Calibrated temperature measurement at 23 degC */
+	uint8_t tmeas_23c;
 
 	/* Channel number */
 	unsigned int channel;
@@ -663,6 +690,9 @@ struct dw1000 {
 	struct dw1000_ptp ptp;
 	/* Clock wraparound detection worker */
 	struct delayed_work ptp_work;
+
+	/* Hardware monitor */
+	struct device *hwmon;
 };
 
 /**
