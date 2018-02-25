@@ -1344,17 +1344,18 @@ static void dw1000_timestamp(struct dw1000 *dw,
 	uint64_t cc;
 	uint32_t cc_frac;
 	uint64_t ns;
-	uint64_t adjust;
+	uint64_t ns_frac;
 
 	/* Convert timestamp to nanoseconds */
 	mutex_lock(&dw->ptp.mutex);
 	cc = le64_to_cpu(time->cc);
 	cc_frac = (cc & ((1 << DW1000_CYCLECOUNTER_FRAC_SHIFT) - 1));
 	cc >>= DW1000_CYCLECOUNTER_FRAC_SHIFT;
-	ns = timecounter_cyc2time(&dw->ptp.tc, cc);
-	adjust = (((uint64_t)cc_frac * dw->ptp.cc.mult) >>
-		  (DW1000_CYCLECOUNTER_SHIFT + DW1000_CYCLECOUNTER_FRAC_SHIFT));
-	ns += adjust;
+	ns = timecounter_cyc2time_frac(&dw->ptp.tc, cc, &ns_frac);
+	ns_frac <<= DW1000_CYCLECOUNTER_FRAC_SHIFT;
+	ns_frac += (uint64_t) cc_frac * dw->ptp.cc.mult;
+	ns += (ns_frac >> DW1000_CYCLECOUNTER_TOTAL_SHIFT);
+	ns_frac &= ((1ULL << DW1000_CYCLECOUNTER_TOTAL_SHIFT) - 1);
 	mutex_unlock(&dw->ptp.mutex);
 
 	/* Fill in kernel hardware timestamp */

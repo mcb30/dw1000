@@ -30,6 +30,7 @@
 #include <linux/timecounter.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/hwmon.h>
+#include "kcompat.h"
 
 /* Supported channel page (UWB only) */
 #define DW1000_CHANNEL_PAGE 4
@@ -415,6 +416,8 @@ union dw1000_ldotune {
 #define DW1000_CYCLECOUNTER_MASK CYCLECOUNTER_MASK(31)
 #define DW1000_CYCLECOUNTER_MULT 2150925128U /* Maximum 32-bit multiplier */
 #define DW1000_CYCLECOUNTER_SHIFT 28 /* Scale down to nanoseconds */
+#define DW1000_CYCLECOUNTER_TOTAL_SHIFT \
+	(DW1000_CYCLECOUNTER_SHIFT + DW1000_CYCLECOUNTER_FRAC_SHIFT)
 
 /* Maximum multiplier adjustment
  *
