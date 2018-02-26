@@ -455,6 +455,16 @@ union dw1000_ldotune {
 #define DW1000_SAR_TEMP_MDEGC(sar, sar_23c) \
 	(23000 + ((100000 * ((sar) - (sar_23c)))) / 114)
 
+/* Maximum possible link quality indicator value */
+#define DW1000_LQI_MAX 0xff
+
+/* Link quality indicator threshold
+ *
+ * This is a somewhat arbitrary choice, providing a basic level of
+ * protection against inaccurate receive timestamps.
+ */
+#define DW1000_LQI_THRESHOLD_DEFAULT 16
+
 /* Pulse repetition frequencies */
 enum dw1000_prf {
 	DW1000_PRF_16M = 0x1,
@@ -697,6 +707,8 @@ struct dw1000 {
 	enum dw1000_rate rate;
 	/* Smart power control enabled */
 	bool smart_power;
+	/* Link quality indicator threshold */
+	uint8_t lqi_threshold;
 
 	/* Interrupt status worker */
 	struct work_struct irq_work;

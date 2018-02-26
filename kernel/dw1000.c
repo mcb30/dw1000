@@ -1580,7 +1580,10 @@ static void dw1000_rx_dfr(struct dw1000 *dw)
 	struct dw1000_rx *rx = &dw->rx;
 	struct sk_buff *skb;
 	uint32_t finfo;
+	uint16_t std_noise;
+	uint16_t fp_ampl2;
 	size_t len;
+	unsigned int lqi;
 	int rc;
 
 	/* Send information SPI message */
@@ -1589,6 +1592,8 @@ static void dw1000_rx_dfr(struct dw1000 *dw)
 		return;
 	}
 	finfo = le32_to_cpu(rx->finfo);
+	std_noise = le16_to_cpu(rx->fqual.std_noise);
+	fp_ampl2 = le16_to_cpu(rx->fqual.fp_ampl2);
 
 	/* Allocate socket buffer */
 	len = DW1000_RX_FINFO_RXFLEN(finfo);
@@ -1599,8 +1604,23 @@ static void dw1000_rx_dfr(struct dw1000 *dw)
 	}
 	skb_put(skb, len);
 
-	/* Record hardware timestamp */
-	dw1000_timestamp(dw, &rx->time, skb_hwtstamps(skb));
+	/* Estimate link quality */
+	if (std_noise) {
+		lqi = (fp_ampl2 / std_noise);
+		if (lqi > DW1000_LQI_MAX)
+			lqi = DW1000_LQI_MAX;
+	} else {
+		lqi = 0;
+	}
+
+	/* Record hardware timestamp, if viable */
+	if (lqi >= dw->lqi_threshold) {
+		dw1000_timestamp(dw, &rx->time, skb_hwtstamps(skb));
+	} else {
+		dev_warn_ratelimited(dw->dev, "poor lqi %d (%#x / %#x) below "
+				     "threshold %d; ignoring timestamp\n", lqi,
+				     fp_ampl2, std_noise, dw->lqi_threshold);
+	}
 
 	/* Update data SPI message */
 	rx->rx_buffer.data.rx_buf = skb->data;
@@ -1613,7 +1633,7 @@ static void dw1000_rx_dfr(struct dw1000 *dw)
 	}
 
 	/* Hand off to IEEE 802.15.4 stack */
-	ieee802154_rx_irqsafe(dw->hw, skb, 0); // TODO: lqi
+	ieee802154_rx_irqsafe(dw->hw, skb, lqi);
 }
 
 /******************************************************************************
@@ -2164,12 +2184,38 @@ static ssize_t dw1000_store_smart_power(struct device *dev,
 }
 static DW1000_ATTR_RW(smart_power, 0644);
 
+/* Link quality indicator threshold */
+static ssize_t dw1000_show_lqi_threshold(struct device *dev,
+					 struct device_attribute *attr,
+					 char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "%d\n", dw->lqi_threshold);
+}
+static ssize_t dw1000_store_lqi_threshold(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	unsigned int lqi_threshold;
+
+	if (kstrtouint(buf, 0, &lqi_threshold) < 0)
+		return -EINVAL;
+	if (lqi_threshold > DW1000_LQI_MAX)
+		return -EINVAL;
+	dw->lqi_threshold = lqi_threshold;
+	return count;
+}
+static DW1000_ATTR_RW(lqi_threshold, 0644);
+
 /* Attribute list */
 static struct attribute *dw1000_attrs[] = {
 	&dev_attr_pcode.attr,
 	&dev_attr_prf.attr,
 	&dev_attr_rate.attr,
 	&dev_attr_smart_power.attr,
+	&dev_attr_lqi_threshold.attr,
 	NULL
 };
 
@@ -2601,6 +2647,7 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->prf = DW1000_PRF_64M;
 	dw->rate = DW1000_RATE_6800K;
 	dw->smart_power = true;
+	dw->lqi_threshold = DW1000_LQI_THRESHOLD_DEFAULT;
 	INIT_WORK(&dw->irq_work, dw1000_irq_worker);
 	INIT_DELAYED_WORK(&dw->ptp_work, dw1000_ptp_worker);
 	hw->parent = &spi->dev;
