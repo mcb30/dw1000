@@ -253,14 +253,18 @@ union dw1000_ldotune {
 /* System event mask register */
 #define DW1000_SYS_MASK_MTXFRS			0x00000080UL
 #define DW1000_SYS_MASK_MRXDFR			0x00002000UL
+#define DW1000_SYS_MASK_MRXOVRR			0x00100000UL
 
 /* System event status register */
 #define DW1000_SYS_STATUS_TXFRS			0x00000080UL
 #define DW1000_SYS_STATUS_RXDFR			0x00002000UL
+#define DW1000_SYS_STATUS_RXOVRR		0x00100000UL
 #define DW1000_SYS_STATUS_ICRBP			0x80000000UL
 #define DW1000_SYS_STATUS_HSRBP			0x40000000UL
 #define DW1000_SYS_STATUS0		0x00
 #define DW1000_SYS_STATUS0_TXFRS		0x80
+#define DW1000_SYS_STATUS2		0x02
+#define DW1000_SYS_STATUS2_RXOVRR		0x10
 
 /* Receive frame information register */
 #define DW1000_RX_FINFO_RXFLEN(val)		(((val) >> 0) & 0x7ff)
@@ -366,6 +370,7 @@ union dw1000_ldotune {
 #define DW1000_PMSC_CTRL0_GPDCE			0x00040000UL
 #define DW1000_PMSC_CTRL0_GPDRN			0x00080000UL
 #define DW1000_PMSC_CTRL0_KHZCLKEN		0x00800000UL
+#define DW1000_PMSC_CTRL0_RXRESET		0x10000000UL
 #define DW1000_PMSC_CTRL0_SOFTRESET_MASK	0xf0000000UL
 #define DW1000_PMSC_LEDC		0x28
 #define DW1000_PMSC_LEDC_BLINK_TIM(n)		((n) << 0)
@@ -603,6 +608,8 @@ struct dw1000_rx {
 	union dw1000_timestamp time;
 	/* Frame quality */
 	struct dw1000_rx_fqual fqual;
+	/* Overrun detection */
+	uint8_t rxovrr;
 
 	/* Information SPI message */
 	struct spi_message info;
@@ -612,6 +619,8 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers rx_stamp;
 	/* Frame quality transfer set */
 	struct dw1000_spi_transfers rx_fqual;
+	/* System status transfer set */
+	struct dw1000_spi_transfers sys_status;
 
 	/* Data SPI message */
 	struct spi_message data;
