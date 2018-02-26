@@ -77,6 +77,18 @@ struct dw1000_spi_transfers {
 	struct spi_transfer data;
 };
 
+/* Frame quality register format */
+struct dw1000_rx_fqual {
+	/* Standard deviation of noise */
+	__le16 std_noise;
+	/* First path amplitude point 2 */
+	__le16 fp_ampl2;
+	/* First path amplitude point 3 */
+	__le16 fp_ampl3;
+	/* Channel impulse response power */
+	__le16 cir_pwr;
+} __packed;
+
 /* EUI-64 extended address format */
 union dw1000_eui64 {
 	/* OTP values */
@@ -579,6 +591,8 @@ struct dw1000_rx {
 	uint32_t finfo;
 	/* Timestamp */
 	union dw1000_timestamp time;
+	/* Frame quality */
+	struct dw1000_rx_fqual fqual;
 
 	/* Information SPI message */
 	struct spi_message info;
@@ -586,6 +600,8 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers rx_finfo;
 	/* Timestamp SPI transfer set */
 	struct dw1000_spi_transfers rx_stamp;
+	/* Frame quality transfer set */
+	struct dw1000_spi_transfers rx_fqual;
 
 	/* Data SPI message */
 	struct spi_message data;

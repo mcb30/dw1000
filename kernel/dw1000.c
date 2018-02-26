@@ -1557,6 +1557,8 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 			 &rx->finfo, sizeof(rx->finfo));
 	dw1000_init_read(&rx->info, &rx->rx_stamp, DW1000_RX_TIME,
 			 DW1000_RX_STAMP, &rx->time.raw, sizeof(rx->time.raw));
+	dw1000_init_read(&rx->info, &rx->rx_fqual, DW1000_RX_FQUAL, 0,
+			 &rx->fqual, sizeof(rx->fqual));
 
 	/* Prepare data SPI message */
 	spi_message_init_no_memset(&rx->data);
