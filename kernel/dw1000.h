@@ -39,7 +39,7 @@
 #define DW1000_CHANNELS (BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | BIT(7))
 
 /* Default channel */
-#define DW1000_CHANNEL_DEFAULT 5
+#define DW1000_CHANNEL_DEFAULT 7
 
 /* Maximum SPI bus speed when PLL is not yet locked */
 #define DW1000_SPI_SLOW_HZ 3000000

@@ -2598,7 +2598,7 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->phy = hw->phy;
 	dw->channel = DW1000_CHANNEL_DEFAULT;
 	dw->pcode = 0;
-	dw->prf = DW1000_PRF_16M;
+	dw->prf = DW1000_PRF_64M;
 	dw->rate = DW1000_RATE_6800K;
 	dw->smart_power = true;
 	INIT_WORK(&dw->irq_work, dw1000_irq_worker);
