@@ -1370,7 +1370,7 @@ static void dw1000_timestamp(struct dw1000 *dw,
  */
 
 static void dw1000_tx_data_complete(void *context);
-static void dw1000_tx_complete(struct dw1000 *dw);
+static void dw1000_tx_complete(struct dw1000 *dw, struct sk_buff *skb);
 
 /**
  * dw1000_tx_prepare() - Prepare transmit SPI messages
@@ -1423,7 +1423,11 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 {
 	struct dw1000 *dw = hw->priv;
 	struct dw1000_tx *tx = &dw->tx;
+	unsigned long flags;
 	int rc;
+
+	/* Acquire TX lock */
+	spin_lock_irqsave(&dw->tx_lock, flags);
 
 	/* Sanity check */
 	if (tx->skb) {
@@ -1448,11 +1452,13 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 	if ((rc = spi_async(dw->spi, &tx->data)) != 0)
 		goto err_spi;
 
+	spin_unlock_irqrestore(&dw->tx_lock, flags);
 	return 0;
 
  err_spi:
 	tx->skb = NULL;
  err_concurrent:
+	spin_unlock_irqrestore(&dw->tx_lock, flags);
 	return rc;
 }
 
@@ -1465,16 +1471,30 @@ static void dw1000_tx_data_complete(void *context)
 {
 	struct dw1000 *dw = context;
 	struct dw1000_tx *tx = &dw->tx;
+	struct sk_buff *skb;
+	unsigned long flags;
+
+	/* Acquire TX lock */
+	spin_lock_irqsave(&dw->tx_lock, flags);
 
 	/* Mark data SPI message as complete */
 	tx->data_complete = true;
 
 	/* Complete transmission immediately if data SPI message failed */
-	if (tx->data.status != 0) {
+	if (unlikely(tx->data.status != 0)) {
 		dev_err(dw->dev, "TX data message failed: %d\n",
 			tx->data.status);
-		dw1000_tx_complete(dw);
+		goto err_status;
 	}
+
+	spin_unlock_irqrestore(&dw->tx_lock, flags);
+	return;
+
+ err_status:
+	skb = tx->skb;
+	tx->skb = NULL;
+	spin_unlock_irqrestore(&dw->tx_lock, flags);
+	dw1000_tx_complete(dw, skb);
 }
 
 /**
@@ -1487,46 +1507,60 @@ static void dw1000_tx_frs(struct dw1000 *dw)
 	struct dw1000_tx *tx = &dw->tx;
 	struct skb_shared_hwtstamps hwtstamps;
 	struct sk_buff *skb;
+	unsigned long flags;
 	int rc;
 
 	/* Ignore if data SPI message has not yet completed */
-	if (!tx->data_complete) {
+	spin_lock_irqsave(&dw->tx_lock, flags);
+	if (!(tx->skb && tx->data_complete)) {
 		dev_err(dw->dev, "spurious TXFRS event\n");
+		spin_unlock_irqrestore(&dw->tx_lock, flags);
 		return;
 	}
+	spin_unlock_irqrestore(&dw->tx_lock, flags);
 
 	/* Send information SPI message */
 	if ((rc = spi_sync(dw->spi, &tx->info)) != 0) {
 		dev_err(dw->dev, "TX information message failed: %d\n", rc);
-		dw1000_tx_complete(dw);
+		spin_lock_irqsave(&dw->tx_lock, flags);
+		skb = tx->skb;
+		tx->skb = NULL;
+		spin_unlock_irqrestore(&dw->tx_lock, flags);
+		dw1000_tx_complete(dw, skb);
 		return;
 	}
 
 	/* Record hardware timestamp, if applicable */
+	spin_lock_irqsave(&dw->tx_lock, flags);
 	skb = tx->skb;
+	tx->skb = NULL;
 	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_IN_PROGRESS)) {
 		dw1000_timestamp(dw, &tx->time, &hwtstamps);
 		skb_tstamp_tx(skb, &hwtstamps);
 	}
+	spin_unlock_irqrestore(&dw->tx_lock, flags);
 
 	/* Report successful completion */
-	dw1000_tx_complete(dw);
+	dw1000_tx_complete(dw, skb);
 }
 
 /**
  * dw1000_tx_complete() - Complete transmission
  *
  * @dw:			DW1000 device
+ * @skb:		Socket buffer
  */
-static void dw1000_tx_complete(struct dw1000 *dw)
+static void dw1000_tx_complete(struct dw1000 *dw, struct sk_buff *skb)
 {
-	struct dw1000_tx *tx = &dw->tx;
-	struct sk_buff *skb;
 	size_t sifs_max_len;
 
+	/* Sanity check */
+	if (unlikely(!skb)) {
+		dev_err(dw->dev, "spurious TX completion\n");
+		return;
+	}
+
 	/* Report completion to IEEE 802.15.4 stack */
-	skb = tx->skb;
-	tx->skb = NULL;
 	sifs_max_len = (IEEE802154_MAX_SIFS_FRAME_SIZE - IEEE802154_FCS_LEN);
 	ieee802154_xmit_complete(dw->hw, skb, (skb->len <= sifs_max_len));
 }
@@ -1545,6 +1579,8 @@ static void dw1000_tx_complete(struct dw1000 *dw)
  */
 static int dw1000_rx_reset(struct dw1000 *dw)
 {
+	struct sk_buff *skb;
+	unsigned long flags;
 	int sys_status;
 	int rc;
 
@@ -1592,9 +1628,13 @@ static int dw1000_rx_reset(struct dw1000 *dw)
 	 * duplex device).  Report as a transmit completion in order
 	 * to unblock the transmit queue.
 	 */
-	if (unlikely(dw->tx.skb)) {
+	spin_lock_irqsave(&dw->tx_lock, flags);
+	skb = dw->tx.skb;
+	dw->tx.skb = NULL;
+	spin_unlock_irqrestore(&dw->tx_lock, flags);
+	if (skb) {
 		dev_warn(dw->dev, "abandoning TX due to RX reset\n");
-		dw1000_tx_complete(dw);
+		dw1000_tx_complete(dw, skb);
 	}
 
 	return 0;
@@ -2724,6 +2764,7 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->rate = DW1000_RATE_6800K;
 	dw->smart_power = true;
 	dw->lqi_threshold = DW1000_LQI_THRESHOLD_DEFAULT;
+	spin_lock_init(&dw->tx_lock);
 	INIT_WORK(&dw->irq_work, dw1000_irq_worker);
 	INIT_DELAYED_WORK(&dw->ptp_work, dw1000_ptp_worker);
 	hw->parent = &spi->dev;

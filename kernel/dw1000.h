@@ -719,6 +719,8 @@ struct dw1000 {
 	/* Link quality indicator threshold */
 	uint8_t lqi_threshold;
 
+	/* Transmit lock */
+	spinlock_t tx_lock;
 	/* Interrupt status worker */
 	struct work_struct irq_work;
 	/* Transmit descriptor */
