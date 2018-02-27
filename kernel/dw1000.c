@@ -1588,6 +1588,16 @@ static int dw1000_rx_reset(struct dw1000 *dw)
 			       DW1000_SYS_CTRL1_RXENAB)) != 0)
 		return rc;
 
+	/* If a transmission was in progress, it will have been
+	 * aborted by the receiver reset (since the DW1000 is a half
+	 * duplex device).  Report as a transmit completion in order
+	 * to unblock the transmit queue.
+	 */
+	if (unlikely(dw->tx.skb)) {
+		dev_warn(dw->dev, "abandoning TX due to RX reset\n");
+		dw1000_tx_complete(dw);
+	}
+
 	return 0;
 }
 
