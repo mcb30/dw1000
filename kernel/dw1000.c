@@ -1577,7 +1577,6 @@ static int dw1000_rx_reset(struct dw1000 *dw)
 		return rc;
 	if ((!!(sys_status & DW1000_SYS_STATUS_HSRBP)) ^
 	    (!!(sys_status & DW1000_SYS_STATUS_ICRBP))) {
-		dev_info(dw->dev, "resyncing HSRBP\n");
 		if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
 				       DW1000_SYS_CTRL3_HRBPT)) != 0)
 			return rc;
