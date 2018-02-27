@@ -1383,7 +1383,10 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
 	static const uint8_t trxoff = DW1000_SYS_CTRL0_TRXOFF;
 	static const uint8_t txstrt = (DW1000_SYS_CTRL0_TXSTRT |
 				       DW1000_SYS_CTRL0_WAIT4RESP);
-	static const uint8_t txfrs = DW1000_SYS_STATUS0_TXFRS;
+	static const uint8_t txfrs = (DW1000_SYS_STATUS0_TXFRB |
+				      DW1000_SYS_STATUS0_TXPRS |
+				      DW1000_SYS_STATUS0_TXPHS |
+				      DW1000_SYS_STATUS0_TXFRS);
 	struct dw1000_tx *tx = &dw->tx;
 
 	/* Initialise transmit descriptor */
