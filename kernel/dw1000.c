@@ -2756,6 +2756,14 @@ static int dw1000_init(struct dw1000 *dw)
 	if ((rc = dw1000_ptp_init(dw)) != 0)
 		return rc;
 
+	/* Clear startup status bits */
+	if ((rc = regmap_write(dw->sys_status.regs, 0,
+			       (DW1000_SYS_STATUS_CPLOCK |
+				DW1000_SYS_STATUS_SLP2INIT |
+				DW1000_SYS_STATUS_RFPLL_LL |
+				DW1000_SYS_STATUS_CLKPLL_LL))) != 0)
+		return rc;
+
 	return 0;
 }
 
