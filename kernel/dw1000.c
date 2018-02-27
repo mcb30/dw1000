@@ -1429,6 +1429,13 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 	/* Acquire TX lock */
 	spin_lock_irqsave(&dw->tx_lock, flags);
 
+	/* Check if receiver reset is in progress */
+	if (dw->tx_blocked) {
+		dev_err_ratelimited(dw->dev, "TX blocked due to RX reset\n");
+		rc = -EBUSY;
+		goto err_blocked;
+	}
+
 	/* Sanity check */
 	if (tx->skb) {
 		dev_err(dw->dev, "concurrent transmit is not supported\n");
@@ -1458,6 +1465,7 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
  err_spi:
 	tx->skb = NULL;
  err_concurrent:
+ err_blocked:
 	spin_unlock_irqrestore(&dw->tx_lock, flags);
 	return rc;
 }
@@ -1584,51 +1592,18 @@ static int dw1000_rx_reset(struct dw1000 *dw)
 	int sys_status;
 	int rc;
 
-	/* Disable receiver (and transmitter) */
-	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
-			       DW1000_SYS_CTRL0_TRXOFF)) != 0)
-		return rc;
-
-	/* Initiate receiver reset */
-	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
-				     DW1000_PMSC_CTRL0_RXRESET, 0)) != 0)
-		return rc;
-
-	/* Clear receiver reset */
-	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
-				     DW1000_PMSC_CTRL0_RXRESET,
-				     DW1000_PMSC_CTRL0_RXRESET)) != 0)
-		return rc;
-
-	/* Resetting the receiver seems not to clear RXOVRR; we need
-	 * to also explicitly poke the host side receive buffer
-	 * pointer toggle (HRBPT) at least once to clear the error.
-	 */
-	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
-			       DW1000_SYS_CTRL3_HRBPT)) != 0)
-		return rc;
-
-	/* Ensure that HSRBP and ICRBP are in sync */
-	if ((rc = regmap_read(dw->sys_status.regs, 0, &sys_status)) != 0)
-		return rc;
-	if ((!!(sys_status & DW1000_SYS_STATUS_HSRBP)) ^
-	    (!!(sys_status & DW1000_SYS_STATUS_ICRBP))) {
-		if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
-				       DW1000_SYS_CTRL3_HRBPT)) != 0)
-			return rc;
-	}
-
-	/* (Re)enable receiver */
-	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL1,
-			       DW1000_SYS_CTRL1_RXENAB)) != 0)
-		return rc;
-
-	/* If a transmission was in progress, it will have been
-	 * aborted by the receiver reset (since the DW1000 is a half
-	 * duplex device).  Report as a transmit completion in order
-	 * to unblock the transmit queue.
+	/* There is no clean separation between the TX and RX
+	 * datapaths.  Resetting the receiver will necessarily disrupt
+	 * any ongoing transmissions, and transmission attempts will
+	 * disrupt the reset process.
+	 *
+	 * Discard any in-progress transmissions, and block further
+	 * transmissions until the reset is complete.  Note that we
+	 * cannot simply use a lock to achieve this, since this code
+	 * must sleep.
 	 */
 	spin_lock_irqsave(&dw->tx_lock, flags);
+	dw->tx_blocked = true;
 	skb = dw->tx.skb;
 	dw->tx.skb = NULL;
 	spin_unlock_irqrestore(&dw->tx_lock, flags);
@@ -1637,7 +1612,58 @@ static int dw1000_rx_reset(struct dw1000 *dw)
 		dw1000_tx_complete(dw, skb);
 	}
 
+	/* Disable receiver (and transmitter) */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
+			       DW1000_SYS_CTRL0_TRXOFF)) != 0)
+		goto err;
+
+	/* Initiate receiver reset */
+	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				     DW1000_PMSC_CTRL0_RXRESET, 0)) != 0)
+		goto err;
+
+	/* Clear receiver reset */
+	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				     DW1000_PMSC_CTRL0_RXRESET,
+				     DW1000_PMSC_CTRL0_RXRESET)) != 0)
+		goto err;
+
+	/* Resetting the receiver seems not to clear RXOVRR; we need
+	 * to also explicitly poke the host side receive buffer
+	 * pointer toggle (HRBPT) at least once to clear the error.
+	 */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
+			       DW1000_SYS_CTRL3_HRBPT)) != 0)
+		goto err;
+
+	/* Ensure that HSRBP and ICRBP are in sync */
+	if ((rc = regmap_read(dw->sys_status.regs, 0, &sys_status)) != 0)
+		goto err;
+	if ((!!(sys_status & DW1000_SYS_STATUS_HSRBP)) ^
+	    (!!(sys_status & DW1000_SYS_STATUS_ICRBP))) {
+		if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
+				       DW1000_SYS_CTRL3_HRBPT)) != 0)
+			goto err;
+	}
+
+	/* (Re)enable receiver */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL1,
+			       DW1000_SYS_CTRL1_RXENAB)) != 0)
+		goto err;
+
+	/* Unblock transmissions */
+	spin_lock_irqsave(&dw->tx_lock, flags);
+	dw->tx_blocked = false;
+	spin_unlock_irqrestore(&dw->tx_lock, flags);
+
 	return 0;
+
+ err:
+	dev_err(dw->dev, "RX reset failed: %d\n", rc);
+	spin_lock_irqsave(&dw->tx_lock, flags);
+	dw->tx_blocked = false;
+	spin_unlock_irqrestore(&dw->tx_lock, flags);
+	return rc;
 }
 
 /**
@@ -1844,10 +1870,8 @@ static int dw1000_start(struct ieee802154_hw *hw)
 	}
 
 	/* Reset and enable receiver */
-	if ((rc = dw1000_rx_reset(dw)) != 0) {
-		dev_err(dw->dev, "RX enable failed: %d\n", rc);
+	if ((rc = dw1000_rx_reset(dw)) != 0)
 		goto err_rx_reset;
-	}
 
 	/* Enable interrupt generation */
 	if ((rc = regmap_write(dw->sys_mask.regs, 0,

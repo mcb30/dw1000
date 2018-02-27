@@ -721,6 +721,8 @@ struct dw1000 {
 
 	/* Transmit lock */
 	spinlock_t tx_lock;
+	/* Transmit blocked due to receiver reset */
+	bool tx_blocked;
 	/* Interrupt status worker */
 	struct work_struct irq_work;
 	/* Transmit descriptor */
