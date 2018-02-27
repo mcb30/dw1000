@@ -1903,12 +1903,6 @@ static void dw1000_stop(struct ieee802154_hw *hw)
 	struct dw1000 *dw = hw->priv;
 	int rc;
 
-	/* Disable receiver and transmitter */
-	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
-			       DW1000_SYS_CTRL0_TRXOFF)) != 0) {
-		dev_err(dw->dev, "could not disable TX/RX: %d\n", rc);
-	}
-
 	/* Disable further interrupt generation */
 	if ((rc = regmap_write(dw->sys_mask.regs, 0, 0)) != 0) {
 		dev_err(dw->dev, "could not disable interrupts: %d\n", rc);
@@ -1916,6 +1910,12 @@ static void dw1000_stop(struct ieee802154_hw *hw)
 
 	/* Complete any pending interrupt work */
 	flush_work(&dw->irq_work);
+
+	/* Disable receiver and transmitter */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
+			       DW1000_SYS_CTRL0_TRXOFF)) != 0) {
+		dev_err(dw->dev, "could not disable TX/RX: %d\n", rc);
+	}
 
 	dev_info(dw->dev, "stopped\n");
 }
