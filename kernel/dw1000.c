@@ -1521,7 +1521,7 @@ static void dw1000_tx_frs(struct dw1000 *dw)
 	/* Ignore if data SPI message has not yet completed */
 	spin_lock_irqsave(&dw->tx_lock, flags);
 	if (!(tx->skb && tx->data_complete)) {
-		dev_err(dw->dev, "spurious TXFRS event\n");
+		dev_err_ratelimited(dw->dev, "spurious TXFRS event\n");
 		spin_unlock_irqrestore(&dw->tx_lock, flags);
 		return;
 	}
