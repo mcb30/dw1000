@@ -609,10 +609,10 @@ struct dw1000_tx {
 
 	/* Information SPI message */
 	struct spi_message info;
-	/* Timestamp SPI transfer set */
-	struct dw1000_spi_transfers tx_time;
 	/* IRQ acknowledgement SPI transfer set */
 	struct dw1000_spi_transfers sys_status;
+	/* Timestamp SPI transfer set */
+	struct dw1000_spi_transfers tx_time;
 };
 
 /* Receive descriptor */

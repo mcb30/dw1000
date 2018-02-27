@@ -1404,10 +1404,10 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
 
 	/* Prepare information SPI message */
 	spi_message_init_no_memset(&tx->info);
-	dw1000_init_read(&tx->info, &tx->tx_time, DW1000_TX_TIME,
-			 DW1000_TX_STAMP, &tx->time.raw, sizeof(tx->time.raw));
 	dw1000_init_write(&tx->info, &tx->sys_status, DW1000_SYS_STATUS,
 			  DW1000_SYS_STATUS0, &txfrs, sizeof(txfrs));
+	dw1000_init_read(&tx->info, &tx->tx_time, DW1000_TX_TIME,
+			 DW1000_TX_STAMP, &tx->time.raw, sizeof(tx->time.raw));
 
 	return 0;
 }
