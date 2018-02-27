@@ -1398,12 +1398,14 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
 	tx->data.context = dw;
 	dw1000_init_write(&tx->data, &tx->tx_buffer, DW1000_TX_BUFFER, 0,
 			  NULL, 0);
-	dw1000_init_write(&tx->data, &tx->tx_fctrl, DW1000_TX_FCTRL,
-			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
 	dw1000_init_write(&tx->data, &tx->sys_ctrl_trxoff, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL0, &trxoff, sizeof(trxoff));
+	dw1000_init_write(&tx->data, &tx->tx_fctrl, DW1000_TX_FCTRL,
+			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
 	dw1000_init_write(&tx->data, &tx->sys_ctrl_txstrt, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL0, &txstrt, sizeof(txstrt));
+	dw1000_init_read(&tx->data, &tx->sys_ctrl_check, DW1000_SYS_CTRL,
+			 DW1000_SYS_CTRL0, &tx->check, sizeof(tx->check));
 
 	/* Prepare information SPI message */
 	spi_message_init_no_memset(&tx->info);
@@ -1488,9 +1490,6 @@ static void dw1000_tx_data_complete(void *context)
 	/* Acquire TX lock */
 	spin_lock_irqsave(&dw->tx_lock, flags);
 
-	/* Mark data SPI message as complete */
-	tx->data_complete = true;
-
 	/* Complete transmission immediately if data SPI message failed */
 	if (unlikely(tx->data.status != 0)) {
 		dev_err(dw->dev, "TX data message failed: %d\n",
@@ -1498,9 +1497,23 @@ static void dw1000_tx_data_complete(void *context)
 		goto err_status;
 	}
 
+	/* Check that transmit instruction was noticed by the
+	 * hardware.  This really ought not to be necessary in any
+	 * sane hardware design.
+	 */
+	if (tx->check & DW1000_SYS_CTRL0_TXSTRT) {
+		dev_err_ratelimited(dw->dev, "TX ignored by hardware (%02x)\n",
+				    tx->check);
+		goto err_check;
+	}
+
+	/* Mark data SPI message as complete */
+	tx->data_complete = true;
+
 	spin_unlock_irqrestore(&dw->tx_lock, flags);
 	return;
 
+ err_check:
  err_status:
 	skb = tx->skb;
 	tx->skb = NULL;

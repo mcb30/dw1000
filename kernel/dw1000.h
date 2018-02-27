@@ -598,6 +598,8 @@ struct dw1000_tx {
 
 	/* Length */
 	uint8_t len;
+	/* Transmit start check */
+	uint8_t check;
 	/* Timestamp */
 	union dw1000_timestamp time;
 
@@ -605,12 +607,14 @@ struct dw1000_tx {
 	struct spi_message data;
 	/* Data buffer SPI transfer set */
 	struct dw1000_spi_transfers tx_buffer;
-	/* Frame control SPI transfer set */
-	struct dw1000_spi_transfers tx_fctrl;
 	/* RX disable SPI transfer set */
 	struct dw1000_spi_transfers sys_ctrl_trxoff;
+	/* Frame control SPI transfer set */
+	struct dw1000_spi_transfers tx_fctrl;
 	/* TX start SPI transfer set */
 	struct dw1000_spi_transfers sys_ctrl_txstrt;
+	/* TX start check SPI transfer set */
+	struct dw1000_spi_transfers sys_ctrl_check;
 	/* Data SPI message has completed */
 	bool data_complete;
 
