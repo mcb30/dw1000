@@ -2756,6 +2756,19 @@ static int dw1000_init(struct dw1000 *dw)
 	if ((rc = dw1000_ptp_init(dw)) != 0)
 		return rc;
 
+	/* Force TX and RX clocks to stay enabled at all times.  This
+	 * seems to prevent an internal state machine lockup under
+	 * heavy load, the symptoms of which are that SYS_STATE_PMSC
+	 * reports the overall state as "RX" but SYS_STATE_RX reports
+	 * the RX state as "idle".
+	 */
+	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				     (DW1000_PMSC_CTRL0_RXCLKS_MASK |
+				      DW1000_PMSC_CTRL0_TXCLKS_MASK),
+				     (DW1000_PMSC_CTRL0_RXCLKS_FAST |
+				      DW1000_PMSC_CTRL0_TXCLKS_FAST))) != 0)
+		return rc;
+
 	/* Clear startup status bits */
 	if ((rc = regmap_write(dw->sys_status.regs, 0,
 			       (DW1000_SYS_STATUS_CPLOCK |
