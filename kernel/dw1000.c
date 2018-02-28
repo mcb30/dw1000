@@ -1434,13 +1434,6 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 	/* Acquire TX lock */
 	spin_lock_irqsave(&dw->tx_lock, flags);
 
-	/* Check if receiver reset is in progress */
-	if (dw->tx_blocked) {
-		dev_err_ratelimited(dw->dev, "TX blocked due to RX reset\n");
-		rc = -EBUSY;
-		goto err_blocked;
-	}
-
 	/* Sanity check */
 	if (tx->skb) {
 		dev_err(dw->dev, "concurrent transmit is not supported\n");
@@ -1470,7 +1463,6 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
  err_spi:
 	tx->skb = NULL;
  err_concurrent:
- err_blocked:
 	spin_unlock_irqrestore(&dw->tx_lock, flags);
 	return rc;
 }
@@ -1522,11 +1514,11 @@ static void dw1000_tx_data_complete(void *context)
 }
 
 /**
- * dw1000_tx_frs() - Handle Transmit Frame Sent (TXFRS) event
+ * dw1000_tx_irq() - Handle Transmit Frame Sent (TXFRS) event
  *
  * @dw:			DW1000 device
  */
-static void dw1000_tx_frs(struct dw1000 *dw)
+static void dw1000_tx_irq(struct dw1000 *dw)
 {
 	struct dw1000_tx *tx = &dw->tx;
 	struct skb_shared_hwtstamps hwtstamps;
@@ -1596,93 +1588,6 @@ static void dw1000_tx_complete(struct dw1000 *dw, struct sk_buff *skb)
  */
 
 /**
- * dw1000_rx_reset() - Reset and (re)enable receiver
- *
- * @dw:			DW1000 device
- * @return:		0 on success or -errno
- */
-static int dw1000_rx_reset(struct dw1000 *dw)
-{
-	struct sk_buff *skb;
-	unsigned long flags;
-	int sys_status;
-	int rc;
-
-	/* There is no clean separation between the TX and RX
-	 * datapaths.  Resetting the receiver will necessarily disrupt
-	 * any ongoing transmissions, and transmission attempts will
-	 * disrupt the reset process.
-	 *
-	 * Discard any in-progress transmissions, and block further
-	 * transmissions until the reset is complete.  Note that we
-	 * cannot simply use a lock to achieve this, since this code
-	 * must sleep.
-	 */
-	spin_lock_irqsave(&dw->tx_lock, flags);
-	dw->tx_blocked = true;
-	skb = dw->tx.skb;
-	dw->tx.skb = NULL;
-	spin_unlock_irqrestore(&dw->tx_lock, flags);
-	if (skb) {
-		dev_warn(dw->dev, "abandoning TX due to RX reset\n");
-		dw1000_tx_complete(dw, skb);
-	}
-
-	/* Disable receiver (and transmitter) */
-	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
-			       DW1000_SYS_CTRL0_TRXOFF)) != 0)
-		goto err;
-
-	/* Initiate receiver reset */
-	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
-				     DW1000_PMSC_CTRL0_RXRESET, 0)) != 0)
-		goto err;
-
-	/* Clear receiver reset */
-	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
-				     DW1000_PMSC_CTRL0_RXRESET,
-				     DW1000_PMSC_CTRL0_RXRESET)) != 0)
-		goto err;
-
-	/* Resetting the receiver seems not to clear RXOVRR; we need
-	 * to also explicitly poke the host side receive buffer
-	 * pointer toggle (HRBPT) at least once to clear the error.
-	 */
-	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
-			       DW1000_SYS_CTRL3_HRBPT)) != 0)
-		goto err;
-
-	/* Ensure that HSRBP and ICRBP are in sync */
-	if ((rc = regmap_read(dw->sys_status.regs, 0, &sys_status)) != 0)
-		goto err;
-	if ((!!(sys_status & DW1000_SYS_STATUS_HSRBP)) ^
-	    (!!(sys_status & DW1000_SYS_STATUS_ICRBP))) {
-		if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
-				       DW1000_SYS_CTRL3_HRBPT)) != 0)
-			goto err;
-	}
-
-	/* (Re)enable receiver */
-	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL1,
-			       DW1000_SYS_CTRL1_RXENAB)) != 0)
-		goto err;
-
-	/* Unblock transmissions */
-	spin_lock_irqsave(&dw->tx_lock, flags);
-	dw->tx_blocked = false;
-	spin_unlock_irqrestore(&dw->tx_lock, flags);
-
-	return 0;
-
- err:
-	dev_err(dw->dev, "RX reset failed: %d\n", rc);
-	spin_lock_irqsave(&dw->tx_lock, flags);
-	dw->tx_blocked = false;
-	spin_unlock_irqrestore(&dw->tx_lock, flags);
-	return rc;
-}
-
-/**
  * dw1000_rx_prepare() - Prepare receive SPI messages
  *
  * @dw:			DW1000 device
@@ -1718,11 +1623,11 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 }
 
 /**
- * dw1000_rx_dfr() - Handle Receiver Data Frame Ready (RXDFR) event
+ * dw1000_rx_irq() - Handle Receiver Data Frame Ready (RXDFR) event
  *
  * @dw:			DW1000 device
  */
-static void dw1000_rx_dfr(struct dw1000 *dw)
+static void dw1000_rx_irq(struct dw1000 *dw)
 {
 	struct dw1000_rx *rx = &dw->rx;
 	struct sk_buff *skb;
@@ -1736,9 +1641,10 @@ static void dw1000_rx_dfr(struct dw1000 *dw)
 	/* Send information SPI message */
 	if ((rc = spi_sync(dw->spi, &rx->info)) != 0) {
 		dev_err(dw->dev, "RX information message failed: %d\n", rc);
-		return;
+		goto err_info;
 	}
 	finfo = le32_to_cpu(rx->finfo);
+	len = DW1000_RX_FINFO_RXFLEN(finfo);
 	std_noise = le16_to_cpu(rx->fqual.std_noise);
 	fp_ampl2 = le16_to_cpu(rx->fqual.fp_ampl2);
 
@@ -1749,24 +1655,33 @@ static void dw1000_rx_dfr(struct dw1000 *dw)
 	 *
 	 * We therefore read those registers first, then re-read the
 	 * SYS_STATUS register.  If overrun is detected then we must
-	 * discard the packet (and reset the receiver): even though
-	 * the received data is still available, we cannot know its
-	 * length.  If overrun is not detected at this point then we
-	 * are safe to read the remaining data even if a subsequent
-	 * overrun occurs before our data read is complete.
+	 * discard the packet: even though the received data is still
+	 * available, we cannot know its length.  If overrun is not
+	 * detected at this point then we are safe to read the
+	 * remaining data even if a subsequent overrun occurs before
+	 * our data read is complete.
+	 *
+	 * We explicitly do not follow Decawave's documented
+	 * instruction to reset the receiver when an overrun occurs.
+	 * Resetting the receiver is highly disruptive to both the
+	 * receive and transmit datapaths, tends to cause further
+	 * receive overruns due to the time taken for the reset, and
+	 * often results in a dead receiver since the post-reset
+	 * RXENAB command is frequently ignored by the hardware.
+	 *
+	 * Instead, we simply discard the received frame and toggle
+	 * HRBPT as for a normally received frame.
 	 */
-	if (rx->rxovrr & DW1000_SYS_STATUS2_RXOVRR) {
-		dev_err(dw->dev, "RX overrun; aborting receive\n");
-		dw1000_rx_reset(dw);
-		return;
+	if (unlikely(rx->rxovrr & DW1000_SYS_STATUS2_RXOVRR)) {
+		dev_err_ratelimited(dw->dev, "RX overrun; aborting receive\n");
+		len = 0;
 	}
 
 	/* Allocate socket buffer */
-	len = DW1000_RX_FINFO_RXFLEN(finfo);
 	skb = dev_alloc_skb(len);
 	if (!skb) {
 		dev_err(dw->dev, "RX buffer allocation failed\n");
-		return;
+		goto err_alloc;
 	}
 	skb_put(skb, len);
 
@@ -1795,11 +1710,23 @@ static void dw1000_rx_dfr(struct dw1000 *dw)
 	/* Send data SPI message */
 	if ((rc = spi_sync(dw->spi, &rx->data)) != 0) {
 		dev_err(dw->dev, "RX data message failed: %d\n", rc);
-		return;
+		goto err_data;
 	}
+
+	/* Discard if an overrun occurred */
+	if (!len)
+		goto err_discard;
 
 	/* Hand off to IEEE 802.15.4 stack */
 	ieee802154_rx_irqsafe(dw->hw, skb, lqi);
+	return;
+
+ err_discard:
+ err_data:
+	dev_kfree_skb_any(skb);
+ err_alloc:
+ err_info:
+	return;
 }
 
 /******************************************************************************
@@ -1842,15 +1769,11 @@ static void dw1000_irq_worker(struct work_struct *work)
 
 	/* Handle transmit completion, if applicable */
 	if (sys_status & DW1000_SYS_STATUS_TXFRS)
-		dw1000_tx_frs(dw);
+		dw1000_tx_irq(dw);
 
 	/* Handle received packet or receive overrun, if applicable */
-	if (sys_status & DW1000_SYS_STATUS_RXOVRR) {
-		dev_err(dw->dev, "RX overrun occurred\n");
-		dw1000_rx_reset(dw);
-	} else if (sys_status & DW1000_SYS_STATUS_RXDFR) {
-		dw1000_rx_dfr(dw);
-	}
+	if (sys_status & (DW1000_SYS_STATUS_RXDFR | DW1000_SYS_STATUS_RXOVRR))
+		dw1000_rx_irq(dw);
 
  abort:
 	enable_irq(dw->spi->irq);
@@ -1871,6 +1794,7 @@ static void dw1000_irq_worker(struct work_struct *work)
 static int dw1000_start(struct ieee802154_hw *hw)
 {
 	struct dw1000 *dw = hw->priv;
+	int sys_status;
 	int rc;
 
 	/* Prepare transmit descriptor */
@@ -1885,9 +1809,16 @@ static int dw1000_start(struct ieee802154_hw *hw)
 		goto err_rx_prepare;
 	}
 
-	/* Reset and enable receiver */
-	if ((rc = dw1000_rx_reset(dw)) != 0)
-		goto err_rx_reset;
+	/* Ensure that HSRBP and ICRBP are in sync */
+	if ((rc = regmap_read(dw->sys_status.regs, 0, &sys_status)) != 0)
+		goto err_sys_status;
+	if ((!!(sys_status & DW1000_SYS_STATUS_HSRBP)) ^
+	    (!!(sys_status & DW1000_SYS_STATUS_ICRBP))) {
+		dev_info(dw->dev, "resyncing HSRBP\n");
+		if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
+				       DW1000_SYS_CTRL3_HRBPT)) != 0)
+			goto err_sys_ctrl3;
+	}
 
 	/* Enable interrupt generation */
 	if ((rc = regmap_write(dw->sys_mask.regs, 0,
@@ -1896,14 +1827,21 @@ static int dw1000_start(struct ieee802154_hw *hw)
 				DW1000_SYS_MASK_MRXOVRR))) != 0)
 		goto err_sys_mask;
 
+	/* Enable receiver */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL1,
+			       DW1000_SYS_CTRL1_RXENAB)) != 0)
+		goto err_sys_ctrl1;
+
 	dev_info(dw->dev, "started\n");
 	return 0;
 
-	regmap_write(dw->sys_mask.regs, 0, 0);
- err_sys_mask:
 	regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
 		     DW1000_SYS_CTRL0_TRXOFF);
- err_rx_reset:
+ err_sys_ctrl1:
+	regmap_write(dw->sys_mask.regs, 0, 0);
+ err_sys_mask:
+ err_sys_ctrl3:
+ err_sys_status:
  err_rx_prepare:
  err_tx_prepare:
 	return rc;
