@@ -28,9 +28,9 @@ static u64 cc_cyc2ns_backwards(const struct cyclecounter *cc,
 {
 	u64 ns = (u64) cycles;
 
-	ns = (ns * cc->mult) - *frac;
-	*frac = (-ns) & mask;
-	return (ns >> cc->shift) + 1;
+	ns = (ns * cc->mult) - *frac + mask;
+	*frac = (~ns) & mask;
+	return (ns >> cc->shift);
 }
 
 u64 timecounter_cyc2time_frac(struct timecounter *tc,
