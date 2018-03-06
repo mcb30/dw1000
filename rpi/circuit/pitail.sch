@@ -132,19 +132,6 @@ F 7 "2290329" H 5100 6150 60  0001 C CNN "SPN"
 	1    5100 6150
 	-1   0    0    -1  
 $EndComp
-NoConn ~ 4700 5300
-NoConn ~ 4400 5300
-$Comp
-L +3.3V #PWR04
-U 1 1 59FFA707
-P 4700 5850
-F 0 "#PWR04" H 4700 5810 30  0001 C CNN
-F 1 "+3.3V" H 4700 5960 30  0000 C CNN
-F 2 "" H 4700 5850 60  0001 C CNN
-F 3 "" H 4700 5850 60  0001 C CNN
-	1    4700 5850
-	1    0    0    -1  
-$EndComp
 $Comp
 L LED_Small D1
 U 1 1 59FFAACD
@@ -261,14 +248,6 @@ F 3 "" H 5400 7450 60  0001 C CNN
 	1    5400 7450
 	1    0    0    -1  
 $EndComp
-Text Label 3500 3950 0    60   ~ 0
-GPIO7
-Text Label 3500 4050 0    60   ~ 0
-SPIPHA
-Text Label 3500 4150 0    60   ~ 0
-SPIPOL
-Text Label 3500 4250 0    60   ~ 0
-GPIO4
 Text Label 3500 4350 0    60   ~ 0
 TXLED
 Text Label 3500 4450 0    60   ~ 0
@@ -277,12 +256,6 @@ Text Label 3500 4550 0    60   ~ 0
 SFDLED
 Text Label 3500 4650 0    60   ~ 0
 RXOKLED
-Text Label 3500 2800 0    60   ~ 0
-RSTn
-Text Label 3500 2700 0    60   ~ 0
-WAKEUP
-Text Label 3500 2600 0    60   ~ 0
-EXTON
 NoConn ~ 6000 3750
 NoConn ~ 6000 3850
 NoConn ~ 6000 4050
@@ -459,29 +432,6 @@ Text Label 9900 4150 0    60   ~ 0
 A1
 Text Label 9900 4250 0    60   ~ 0
 A2
-Text Label 6100 5900 0    60   ~ 0
-RSTXn
-Text Label 6100 5600 0    60   ~ 0
-IRQX
-$Comp
-L CONN_02X12 J1
-U 1 1 5A00C401
-P 4550 5050
-F 0 "J1" H 4550 5700 50  0000 C CNN
-F 1 "CONN_02X12" V 4550 5050 50  0000 C CNN
-F 2 "Pin_Headers:Pin_Header_Straight_2x12_Pitch2.54mm" H 4550 3850 50  0001 C CNN
-F 3 "" H 4550 3850 50  0001 C CNN
-F 4 "MULTICOMP" H 4550 5050 60  0001 C CNN "MFR"
-F 5 "2213S-24G" H 4550 5050 60  0001 C CNN "MPN"
-F 6 "Farnell" H 4550 5050 60  0001 C CNN "SPR"
-F 7 "1593448" H 4550 5050 60  0001 C CNN "SPN"
-	1    4550 5050
-	0    -1   1    0   
-$EndComp
-Text Label 6100 5700 0    60   ~ 0
-EXTONX
-Text Label 6100 5800 0    60   ~ 0
-WAKEUPX
 $Comp
 L AP111733 U2
 U 1 1 5A662220
@@ -578,8 +528,6 @@ Wire Wire Line
 Wire Wire Line
 	5600 3350 6000 3350
 Wire Wire Line
-	8300 3450 8300 5900
-Wire Wire Line
 	6600 4650 6600 4750
 Wire Wire Line
 	6600 4750 7350 4750
@@ -631,78 +579,23 @@ Connection ~ 1350 3850
 Wire Wire Line
 	3450 4550 4100 4550
 Wire Wire Line
-	4100 4550 4100 4800
+	4100 4550 4100 6850
 Wire Wire Line
 	3450 4450 4200 4450
 Wire Wire Line
-	4200 4450 4200 4800
+	4200 4450 4200 6500
 Wire Wire Line
 	3450 4350 4300 4350
 Wire Wire Line
-	4300 4350 4300 4800
-Wire Wire Line
-	3450 4250 4400 4250
-Wire Wire Line
-	4400 4250 4400 4800
-Wire Wire Line
-	3450 4150 4500 4150
-Wire Wire Line
-	4500 4150 4500 4800
-Wire Wire Line
-	3450 4050 4600 4050
-Wire Wire Line
-	4600 4050 4600 4800
-Wire Wire Line
-	3450 3950 4700 3950
-Wire Wire Line
-	4700 3950 4700 4800
-Wire Wire Line
-	4700 5900 4700 5850
-Wire Wire Line
-	4500 5900 4700 5900
-Wire Wire Line
-	4500 5900 4500 5300
-Wire Wire Line
-	4600 5300 4600 5900
-Connection ~ 4600 5900
-Wire Wire Line
-	1450 3650 1150 3650
-Wire Wire Line
-	1150 3650 1150 2800
-Wire Wire Line
-	1150 2800 4800 2800
-Wire Wire Line
-	4800 2800 4800 4800
-Wire Wire Line
-	1450 3450 1250 3450
-Wire Wire Line
-	1250 3450 1250 2700
-Wire Wire Line
-	1250 2700 4900 2700
-Wire Wire Line
-	4900 2700 4900 4800
-Wire Wire Line
-	5000 4800 5000 2600
-Wire Wire Line
-	5000 2600 1350 2600
-Wire Wire Line
-	1350 2600 1350 3250
-Wire Wire Line
-	1350 3250 1450 3250
-Wire Wire Line
-	4300 5300 4300 6150
+	4300 4350 4300 6150
 Wire Wire Line
 	4300 6150 4500 6150
 Wire Wire Line
-	4200 5300 4200 6500
-Wire Wire Line
 	4200 6500 4500 6500
-Wire Wire Line
-	4100 5300 4100 6850
 Wire Wire Line
 	4100 6850 4500 6850
 Wire Wire Line
-	4000 5300 4000 7200
+	4000 4650 4000 7200
 Wire Wire Line
 	4000 7200 4500 7200
 Wire Wire Line
@@ -720,8 +613,6 @@ Wire Wire Line
 Connection ~ 5400 6500
 Wire Wire Line
 	3450 4650 4000 4650
-Wire Wire Line
-	4000 4650 4000 4800
 Wire Wire Line
 	7800 4050 9050 4050
 Wire Wire Line
@@ -791,39 +682,15 @@ Wire Wire Line
 Wire Wire Line
 	6700 1850 6700 2050
 Wire Wire Line
-	5100 4800 5100 3750
+	5100 3750 5100 5150
 Wire Wire Line
 	5100 3750 3450 3750
 Wire Wire Line
-	4800 5300 4800 5900
-Wire Wire Line
-	4800 5900 8300 5900
-Wire Wire Line
-	7800 3450 8300 3450
-Wire Wire Line
 	7800 3550 8000 3550
 Wire Wire Line
-	8000 3550 8000 5600
+	8000 3550 8000 5150
 Wire Wire Line
-	8000 5600 5100 5600
-Wire Wire Line
-	5100 5600 5100 5300
-Wire Wire Line
-	4900 5300 4900 5800
-Wire Wire Line
-	4900 5800 8200 5800
-Wire Wire Line
-	8200 5800 8200 3350
-Wire Wire Line
-	8200 3350 7800 3350
-Wire Wire Line
-	5000 5300 5000 5700
-Wire Wire Line
-	5000 5700 8100 5700
-Wire Wire Line
-	8100 5700 8100 3250
-Wire Wire Line
-	8100 3250 7800 3250
+	8000 5150 5100 5150
 Wire Wire Line
 	9300 1850 9300 2200
 Wire Wire Line
@@ -900,4 +767,14 @@ Wire Wire Line
 Wire Wire Line
 	4800 6150 5000 6150
 NoConn ~ 6800 2050
+NoConn ~ 7800 3250
+NoConn ~ 7800 3350
+NoConn ~ 7800 3450
+NoConn ~ 3450 4250
+NoConn ~ 3450 4150
+NoConn ~ 3450 3950
+NoConn ~ 3450 4050
+NoConn ~ 1450 3650
+NoConn ~ 1450 3450
+NoConn ~ 1450 3250
 $EndSCHEMATC
