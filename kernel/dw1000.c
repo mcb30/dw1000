@@ -1422,6 +1422,15 @@ static void dw1000_timestamp(struct dw1000 *dw,
 	hwtstamps->hwtstamp = ns_to_ktime(stamp.tv_nsec);
 #ifdef HAVE_HWTSFRAC
 	hwtstamps->hwtsfrac = ns_to_ktime_frac(stamp.tv_frac);
+#else
+	// HACK - temporary sub-nanosecond timestamp API
+	if (1) {
+		uint64_t hack = stamp.tv_nsec;
+		hack -= 0x1500000000000000ULL;
+		hack <<= 8;
+		hack += (stamp.tv_frac >> 24);
+		hwtstamps->hwtstamp = ns_to_ktime(hack);
+	}
 #endif
 }
 
