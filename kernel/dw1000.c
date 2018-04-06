@@ -1361,6 +1361,10 @@ static void dw1000_timestamp(struct dw1000 *dw,
 	/* Fill in kernel hardware timestamp */
 	memset(hwtstamps, 0, sizeof(*hwtstamps));
 	hwtstamps->hwtstamp = ns_to_ktime(ns);
+#ifdef HAVE_TIMEHIRES
+	hwtstamps->hwtsfrac.tf32 =
+		ns_frac >> (DW1000_CYCLECOUNTER_TOTAL_SHIFT - 32);
+#endif
 }
 
 /******************************************************************************
