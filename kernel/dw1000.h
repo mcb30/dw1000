@@ -232,8 +232,7 @@ union dw1000_ldotune {
 #define DW1000_TX_FCTRL2_TXPRF(n)		((n) << 0)
 #define DW1000_TX_FCTRL2_TXPRF_MASK		DW1000_TX_FCTRL2_TXPRF(0x3)
 #define DW1000_TX_FCTRL2_TXPSR(n)		((n) << 2)
-#define DW1000_TX_FCTRL2_TXPSR_MASK		DW1000_TX_FCTRL2_TXPSR(0x3)
-#define DW1000_TX_FCTRL2_PE_MASK		0x30
+#define DW1000_TX_FCTRL2_TXPSR_MASK		DW1000_TX_FCTRL2_TXPSR(0xF)
 #define DW1000_TX_FCTRL4		0x04
 #define DW1000_TX_FCTRL4_IFSDELAY(n)		(((n) - 6) << 0)
 #define DW1000_TX_FCTRL4_IFSDELAY_MASK		DW1000_TX_FCTRL4_IFSDELAY(0xff)
@@ -493,6 +492,17 @@ union dw1000_ldotune {
  * protection against inaccurate receive timestamps.
  */
 #define DW1000_LQI_THRESHOLD_DEFAULT 16
+
+/* TX Preamble lenghts */
+enum dw1000_txpsr {
+	DW1000_TXPSR_64   = 0x1,
+	DW1000_TXPSR_128  = 0x5,
+	DW1000_TXPSR_256  = 0x9,
+	DW1000_TXPSR_512  = 0xD,
+	DW1000_TXPSR_1024 = 0x2,
+	DW1000_TXPSR_2048 = 0xA,
+	DW1000_TXPSR_4096 = 0x3,
+};
 
 /* Pulse repetition frequencies */
 enum dw1000_prf {
