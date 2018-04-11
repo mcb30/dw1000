@@ -510,6 +510,7 @@ enum dw1000_rate {
 
 /* Transmit preamble symbol repetitions */
 enum dw1000_txpsr {
+	DW1000_TXPSR_DEFAULT = 0x0,
 	DW1000_TXPSR_64 = 0x1,
 	DW1000_TXPSR_128 = 0x5,
 	DW1000_TXPSR_256 = 0x9,
@@ -557,7 +558,7 @@ struct dw1000_prf_config {
 struct dw1000_rate_config {
 	/* Symbol duration in nanoseconds */
 	unsigned int tdsym_ns;
-	/* Transmit frame control preamble symbol repetitions value */
+	/* Default transmit preamble symbol repetitions value */
 	unsigned int txpsr;
 	/* Digital receiver tuning register 0B value */
 	uint16_t drx_tune0b;
@@ -752,6 +753,8 @@ struct dw1000 {
 	enum dw1000_prf prf;
 	/* Data rate */
 	enum dw1000_rate rate;
+	/* Preamble symbol repetitions */
+	enum dw1000_txpsr txpsr;
 	/* Smart power control enabled */
 	bool smart_power;
 	/* Link quality indicator threshold */

@@ -48,13 +48,25 @@ static const unsigned int dw1000_rates[] = {
 	[DW1000_RATE_6800K] = 6800,
 };
 
+/* Transmit preamble symbol repetitions values */
+static const unsigned int dw1000_txpsrs[] = {
+	[DW1000_TXPSR_DEFAULT] = 0,
+	[DW1000_TXPSR_64] = 64,
+	[DW1000_TXPSR_128] = 128,
+	[DW1000_TXPSR_256] = 256,
+	[DW1000_TXPSR_512] = 512,
+	[DW1000_TXPSR_1024] = 1024,
+	[DW1000_TXPSR_2048] = 2048,
+	[DW1000_TXPSR_4096] = 4096,
+};
+
 /**
  * Look up pulse repetition frequency
  *
  * @prf:		Pulse repetition frequency in MHz
  * @return:		Pulse repetition frequency enumeration or -errno
  */
-static int dw1000_prf(unsigned int prf)
+static int dw1000_lookup_prf(unsigned int prf)
 {
 	unsigned int i;
 
@@ -71,12 +83,29 @@ static int dw1000_prf(unsigned int prf)
  * @rate:		Data rate in kbps
  * @return:		Data rate enumeration or -errno
  */
-static int dw1000_rate(unsigned int rate)
+static int dw1000_lookup_rate(unsigned int rate)
 {
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(dw1000_rates); i++) {
 		if (dw1000_rates[i] && (dw1000_rates[i] == rate))
+			return i;
+	}
+	return -EINVAL;
+}
+
+/**
+ * Look up preamble symbol repetitions
+ *
+ * @txpsr:		Preamble symbol repetitions
+ * @return:		Preamble symbol repetitions enumeration or -errno
+ */
+static int dw1000_lookup_txpsr(unsigned int txpsr)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(dw1000_txpsrs); i++) {
+		if (dw1000_txpsrs[i] == txpsr)
 			return i;
 	}
 	return -EINVAL;
@@ -737,7 +766,8 @@ enum dw1000_configuration_change {
 	DW1000_CONFIGURE_PCODE		= BIT(2),
 	DW1000_CONFIGURE_PRF		= BIT(3),
 	DW1000_CONFIGURE_RATE		= BIT(4),
-	DW1000_CONFIGURE_SMART_POWER	= BIT(5),
+	DW1000_CONFIGURE_TXPSR		= BIT(5),
+	DW1000_CONFIGURE_SMART_POWER	= BIT(6),
 };
 
 /**
@@ -757,6 +787,22 @@ static unsigned int dw1000_pcode(struct dw1000 *dw)
 
 	/* Otherwise, use highest supported preamble code */
 	return (fls(pcodes) - 1);
+}
+
+/**
+ * dw1000_txpsr() - Calculate preamble symbol repetitions
+ *
+ * @dw:			DW1000 device
+ * @return:		Preamble symbol repetitions
+ */
+static enum dw1000_txpsr dw1000_txpsr(struct dw1000 *dw)
+{
+	/* Use explicitly set preamble symbol repetitions if configured */
+	if (dw->txpsr != DW1000_TXPSR_DEFAULT)
+		return dw->txpsr;
+
+	/* Otherwise, use default for the current data rate */
+	return dw1000_rate_configs[dw->rate].txpsr;
 }
 
 /**
@@ -780,6 +826,7 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	unsigned int pcode;
 	enum dw1000_prf prf;
 	enum dw1000_rate rate;
+	enum dw1000_txpsr txpsr;
 	bool smart_power;
 	unsigned int i;
 	int mask;
@@ -791,6 +838,7 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	pcode = dw1000_pcode(dw);
 	prf = dw->prf;
 	rate = dw->rate;
+	txpsr = dw1000_txpsr(dw);
 	smart_power = dw->smart_power;
 	channel_cfg = &dw1000_channel_configs[channel];
 	pcode_cfg = &dw1000_pcode_configs[pcode];
@@ -827,11 +875,12 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 					     mask, value)) != 0)
 			return rc;
 	}
-	if (changed & (DW1000_CONFIGURE_PRF | DW1000_CONFIGURE_RATE)) {
+	if (changed & (DW1000_CONFIGURE_PRF | DW1000_CONFIGURE_RATE |
+		       DW1000_CONFIGURE_TXPSR)) {
 		mask = (DW1000_TX_FCTRL2_TXPRF_MASK |
 			DW1000_TX_FCTRL2_TXPSR_MASK);
 		value = (DW1000_TX_FCTRL2_TXPRF(prf) |
-			 DW1000_TX_FCTRL2_TXPSR(rate_cfg->txpsr));
+			 DW1000_TX_FCTRL2_TXPSR(txpsr));
 		if ((rc = regmap_update_bits(dw->tx_fctrl.regs,
 					     DW1000_TX_FCTRL2,
 					     mask, value)) != 0)
@@ -1076,6 +1125,29 @@ static int dw1000_configure_rate(struct dw1000 *dw, enum dw1000_rate rate)
 		return rc;
 
 	dev_dbg(dw->dev, "set data rate %dkbps\n", dw1000_rates[dw->rate]);
+	return 0;
+}
+
+/**
+ * dw1000_configure_txpsr() - Configure transmit preamble symbol repetitions
+ *
+ * @dw:			DW1000 device
+ * @txpsr:		Transmit preamble symbol repetitions
+ * @return:		0 on success or -errno
+ */
+static int dw1000_configure_txpsr(struct dw1000 *dw, enum dw1000_txpsr txpsr)
+{
+	int rc;
+
+	/* Record transmit preamble symbol repetitions */
+	dw->txpsr = txpsr;
+
+	/* Reconfigure transmit preamble symbol repetitions */
+	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_TXPSR)) != 0)
+		return rc;
+
+	dev_dbg(dw->dev, "set %d preamble symbol repetitions\n",
+		dw1000_txpsrs[dw1000_txpsr(dw)]);
 	return 0;
 }
 
@@ -2222,7 +2294,7 @@ static ssize_t dw1000_store_prf(struct device *dev,
 
 	if ((rc = kstrtoint(buf, 0, &raw)) != 0)
 		return rc;
-	if ((prf = dw1000_prf(raw)) < 0)
+	if ((prf = dw1000_lookup_prf(raw)) < 0)
 		return prf;
 	if ((rc = dw1000_configure_prf(dw, prf)) != 0)
 		return rc;
@@ -2249,13 +2321,40 @@ static ssize_t dw1000_store_rate(struct device *dev,
 
 	if ((rc = kstrtoint(buf, 0, &raw)) != 0)
 		return rc;
-	if ((rate = dw1000_rate(raw)) < 0)
+	if ((rate = dw1000_lookup_rate(raw)) < 0)
 		return rate;
 	if ((rc = dw1000_configure_rate(dw, rate)) != 0)
 		return rc;
 	return count;
 }
 static DW1000_ATTR_RW(rate, 0644);
+
+/* Transmit preamble symbol repetitions */
+static ssize_t dw1000_show_txpsr(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "%d\n", dw1000_txpsrs[dw1000_txpsr(dw)]);
+}
+static ssize_t dw1000_store_txpsr(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	int raw;
+	int txpsr;
+	int rc;
+
+	if ((rc = kstrtoint(buf, 0, &raw)) != 0)
+		return rc;
+	if ((txpsr = dw1000_lookup_txpsr(raw)) < 0)
+		return txpsr;
+	if ((rc = dw1000_configure_txpsr(dw, txpsr)) != 0)
+		return rc;
+	return count;
+}
+static DW1000_ATTR_RW(txpsr, 0644);
 
 /* Smart power control */
 static ssize_t dw1000_show_smart_power(struct device *dev,
@@ -2311,6 +2410,7 @@ static struct attribute *dw1000_attrs[] = {
 	&dev_attr_pcode.attr,
 	&dev_attr_prf.attr,
 	&dev_attr_rate.attr,
+	&dev_attr_txpsr.attr,
 	&dev_attr_smart_power.attr,
 	&dev_attr_lqi_threshold.attr,
 	NULL
@@ -2764,6 +2864,7 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->pcode = 0;
 	dw->prf = DW1000_PRF_64M;
 	dw->rate = DW1000_RATE_6800K;
+	dw->txpsr = DW1000_TXPSR_DEFAULT;
 	dw->smart_power = true;
 	dw->lqi_threshold = DW1000_LQI_THRESHOLD_DEFAULT;
 	spin_lock_init(&dw->tx_lock);
