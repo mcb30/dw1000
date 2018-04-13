@@ -1,0 +1,13 @@
+# This configuration file fragment is required to allow ifupdown to
+# automatically bring up the monitor (wpan0) and 6LoWPAN (lowpan0)
+# interfaces for an IEEE 802.15.4 PHY.
+#
+# Note that the "wpan0" monitor interface does not actually support
+# the "inet" or "inet6" address families; the "iface wpan0" line
+# exists solely to ensure that ifupdown will bring up the interface.
+# All IP traffic is carried via the "lowpan0" interface.
+
+allow-hotplug wpan0
+allow-hotplug lowpan0
+iface wpan0 inet6 manual
+iface lowpan0 inet6 auto

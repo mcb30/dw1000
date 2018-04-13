@@ -1,3 +1,6 @@
+Overview
+========
+
 The DecaWave DW1000 is an IEEE 802.15.4 ultra-wideband (UWB) radio
 chip, capable of timestamping received and transmitted packets with a
 nominal resolution of 64GHz (15ps).  This equates to a distance of
@@ -32,9 +35,25 @@ Build and install the kernel module(s):
     sudo make -C ${KBUILD} M=`pwd`/rpi/kernel modules_install
     sudo depmod -a
 
+Install the `udev` and `ifupdown` configuration files:
+
+    sudo make -C rpi/config install
+
 Retrigger `udev` to detect the DW1000:
 
     sudo udevadm trigger
 
-Your kernel log should show a message such as
-`dw1000 spi0.0: found model 1.3.0`.
+List your network devices:
+
+    ip addr
+
+You should see two interfaces: `wpan0` and `lowpan0`.  For example:
+
+    wpan0: <BROADCAST,NOARP,UP,LOWER_UP> mtu 123 state UNKNOWN
+     link/ieee802.15.4 70:b3:d5:b1:e0:00:00:02 brd ff:ff:ff:ff:ff:ff:ff:ff
+    lowpan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1280 state UNKNOWN
+     link/6lowpan 70:b3:d5:b1:e0:00:00:02 brd ff:ff:ff:ff:ff:ff:ff:ff
+     inet6 fe80::72b3:d5b1:e000:2/64 scope link
+        valid_lft forever preferred_lft forever
+
+Congratulations; you now have a working DW1000 network interface!
