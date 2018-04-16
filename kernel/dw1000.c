@@ -1186,9 +1186,9 @@ static int dw1000_configure_smart_power(struct dw1000 *dw, bool smart_power)
  * @cc:			Cycle counter
  * @return:		Cycle count
  */
-static uint64_t dw1000_ptp_cc_read(const struct cyclecounter *cc)
+static uint64_t dw1000_ptp_cc_read(const struct hires_counter *tc)
 {
-	struct dw1000 *dw = container_of(cc, struct dw1000, ptp.cc);
+	struct dw1000 *dw = container_of(tc, struct dw1000, ptp.tc);
 	union dw1000_timestamp time;
 	int rc;
 
@@ -1215,7 +1215,7 @@ static uint64_t dw1000_ptp_cc_read(const struct cyclecounter *cc)
 		return 0;
 	}
 
-	return (le64_to_cpu(time.cc) >> DW1000_CYCLECOUNTER_FRAC_SHIFT);
+	return le64_to_cpu(time.cc);
 }
 
 /**
@@ -1227,10 +1227,13 @@ static void dw1000_ptp_worker(struct work_struct *work)
 {
 	struct dw1000 *dw = container_of(to_delayed_work(work),
 					 struct dw1000, ptp_work);
+	struct hires_counter *tc = &dw->ptp.tc;
 
-	/* Read timecounter; this must be done at least twice per wraparound */
+	/* Synchronise counter; this must be done at least
+	 * twice per wraparound.
+	 */
 	mutex_lock(&dw->ptp.mutex);
-	timecounter_read(&dw->ptp.tc);
+	hires_counter_sync(tc);
 	mutex_unlock(&dw->ptp.mutex);
 
 	/* Reschedule worker */
@@ -1247,36 +1250,22 @@ static void dw1000_ptp_worker(struct work_struct *work)
 static int dw1000_ptp_adjfreq(struct ptp_clock_info *ptp, int32_t delta)
 {
 	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
-	uint64_t delta_mult;
-	uint32_t mult;
-	bool negate;
-
-	/* Split out sign to allow for unsigned division */
-	if (delta < 0) {
-		delta = -delta;
-		negate = true;
-	} else {
-		negate = false;
-	}
+	struct hires_counter *tc = &dw->ptp.tc;
+	uint64_t mult;
 
 	/* Calculate multiplier value */
-	delta_mult = delta;
-	delta_mult *= DW1000_CYCLECOUNTER_MULT;
-	delta_mult = div_u64(delta_mult, 1000000000UL); /* ppb */
-	mult = (negate ? (DW1000_CYCLECOUNTER_MULT - delta_mult) :
-		(DW1000_CYCLECOUNTER_MULT + delta_mult));
-	dev_dbg(dw->dev, "adjust frequency %+d ppb: multiplier %u->%u\n",
-		(negate ? -delta : delta), DW1000_CYCLECOUNTER_MULT, mult);
+	mult = (delta < 0) ? -delta : delta;
+	mult *= DW1000_CYCLECOUNTER_MULT / 1000000000ULL;
+	mult = (delta < 0) ? DW1000_CYCLECOUNTER_MULT - mult:
+			     DW1000_CYCLECOUNTER_MULT + mult;
 
-	/* Read timecounter to establish a baseline point at which the
-	 * frequency changes (i.e. to synchronise the cycle and
-	 * nanosecond counts), then adjust the multiplier.
-	 */
+	/* Adjust counter multiplier */
 	mutex_lock(&dw->ptp.mutex);
-	timecounter_read(&dw->ptp.tc);
-	dw->ptp.cc.mult = mult;
+	hires_counter_setmult(tc, mult);
 	mutex_unlock(&dw->ptp.mutex);
 
+	dev_dbg(dw->dev, "adjust frequency %+d ppb: multiplier adj %llu\n",
+		delta, (unsigned long long) mult);
 	return 0;
 }
 
@@ -1290,10 +1279,12 @@ static int dw1000_ptp_adjfreq(struct ptp_clock_info *ptp, int32_t delta)
 static int dw1000_ptp_adjtime(struct ptp_clock_info *ptp, int64_t delta)
 {
 	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
+	struct hires_counter *tc = &dw->ptp.tc;
+	struct timehires hdelta = { delta, 0, };
 
 	/* Adjust timecounter */
 	mutex_lock(&dw->ptp.mutex);
-	timecounter_adjtime(&dw->ptp.tc, delta);
+	hires_counter_adjtime(tc, hdelta);
 	mutex_unlock(&dw->ptp.mutex);
 
 	dev_dbg(dw->dev, "adjust time %+lld ns\n", delta);
@@ -1311,15 +1302,16 @@ static int dw1000_ptp_gettime(struct ptp_clock_info *ptp,
 			      struct timespec64 *ts)
 {
 	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
-	uint64_t ns;
+	struct hires_counter *tc = &dw->ptp.tc;
+	struct timehires time;
 
 	/* Read timecounter */
 	mutex_lock(&dw->ptp.mutex);
-	ns = timecounter_read(&dw->ptp.tc);
+	time = hires_counter_cyc2time(tc, hires_counter_read(tc));
 	mutex_unlock(&dw->ptp.mutex);
 
 	/* Convert to timespec */
-	*ts = ns_to_timespec64(ns);
+	*ts = ns_to_timespec64(time.tv_nsec);
 
 	return 0;
 }
@@ -1335,17 +1327,19 @@ static int dw1000_ptp_settime(struct ptp_clock_info *ptp,
 			      const struct timespec64 *ts)
 {
 	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
-	uint64_t ns;
+	struct hires_counter *tc = &dw->ptp.tc;
+	struct timehires time;
 
 	/* Convert to nanoseconds */
-	ns = timespec64_to_ns(ts);
+	time.tv_nsec = timespec64_to_ns(ts);
+	time.tv_frac = 0;
 
-	/* Reinitialise timecounter */
+	/* Reset timecounter */
 	mutex_lock(&dw->ptp.mutex);
-	timecounter_init(&dw->ptp.tc, &dw->ptp.cc, ns);
+	hires_counter_settime(tc, time);
 	mutex_unlock(&dw->ptp.mutex);
 
-	dev_dbg(dw->dev, "set time %llu ns\n", ns);
+	dev_dbg(dw->dev, "set time %llu ns\n", time.tv_nsec);
 	return 0;
 }
 
@@ -1372,21 +1366,20 @@ static int dw1000_ptp_enable(struct ptp_clock_info *ptp,
  */
 static int dw1000_ptp_init(struct dw1000 *dw)
 {
-	struct cyclecounter *cc = &dw->ptp.cc;
-	struct timecounter *tc = &dw->ptp.tc;
 	struct ptp_clock_info *info = &dw->ptp.info;
+	struct hires_counter *tc = &dw->ptp.tc;
+	struct timehires start;
 
 	/* Initialise mutex */
 	mutex_init(&dw->ptp.mutex);
 
-	/* Initialise cycle counter */
-	cc->read = dw1000_ptp_cc_read;
-	cc->mask = DW1000_CYCLECOUNTER_MASK;
-	cc->mult = DW1000_CYCLECOUNTER_MULT;
-	cc->shift = DW1000_CYCLECOUNTER_SHIFT;
+	/* Counter starting time */
+	start.tv_nsec = ktime_to_ns(ktime_get_real());
+	start.tv_frac = 0;
 
 	/* Initialise time counter */
-	timecounter_init(tc, cc, ktime_to_ns(ktime_get_real()));
+	hires_counter_init(tc, dw1000_ptp_cc_read, start,
+			   DW1000_CYCLECOUNTER_SIZE, DW1000_CYCLECOUNTER_MULT);
 
 	/* Initialise PTP clock information */
 	info->owner = THIS_MODULE;
@@ -1412,29 +1405,23 @@ static void dw1000_timestamp(struct dw1000 *dw,
 			     const union dw1000_timestamp *time,
 			     struct skb_shared_hwtstamps *hwtstamps)
 {
-	uint64_t cc;
-	uint32_t cc_frac;
-	uint64_t ns;
-	uint64_t ns_frac;
+	struct hires_counter *tc = &dw->ptp.tc;
+	struct timehires stamp;
+	cycle_t cc;
+
+	/* Get 5-byte timestamp */
+	cc = le64_to_cpu(time->cc);
 
 	/* Convert timestamp to nanoseconds */
 	mutex_lock(&dw->ptp.mutex);
-	cc = le64_to_cpu(time->cc);
-	cc_frac = cc & DW1000_CYCLECOUNTER_FRAC_MASK;
-	cc >>= DW1000_CYCLECOUNTER_FRAC_SHIFT;
-	ns = timecounter_cyc2time_frac(&dw->ptp.tc, cc, &ns_frac);
-	ns_frac <<= DW1000_CYCLECOUNTER_FRAC_SHIFT;
-	ns_frac += (uint64_t) cc_frac * dw->ptp.cc.mult;
-	ns += ns_frac >> DW1000_CYCLECOUNTER_TOTAL_SHIFT;
-	ns_frac &= DW1000_CYCLECOUNTER_TOTAL_MASK;
+	stamp = hires_counter_cyc2time(tc, cc);
 	mutex_unlock(&dw->ptp.mutex);
 
 	/* Fill in kernel hardware timestamp */
 	memset(hwtstamps, 0, sizeof(*hwtstamps));
-	hwtstamps->hwtstamp = ns_to_ktime(ns);
-#ifdef HAVE_TIMEHIRES
-	hwtstamps->hwtsfrac.tf32 =
-		ns_frac >> (DW1000_CYCLECOUNTER_TOTAL_SHIFT - 32);
+	hwtstamps->hwtstamp = ns_to_ktime(stamp.tv_nsec);
+#ifdef HAVE_HWTSFRAC
+	hwtstamps->hwtsfrac = ns_to_ktime_frac(stamp.tv_frac);
 #endif
 }
 
