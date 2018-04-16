@@ -20,6 +20,7 @@ Build instructions
 On your Raspberry Pi, install the most recent kernel along with the
 corresponding kernel headers:
 
+    sudo apt update
     sudo apt install raspberrypi-kernel raspberrypi-kernel-headers
 
 If necessary, reboot to ensure that you are running the correct kernel
