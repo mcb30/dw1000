@@ -23,9 +23,25 @@
 #ifndef __DW1000_KCOMPAT_H
 #define __DW1000_KCOMPAT_H
 
-#include <linux/timecounter.h>
+#include <linux/version.h>
+#include <linux/types.h>
+#include <linux/ktime.h>
 
-extern u64 timecounter_cyc2time_frac(struct timecounter *tc,
-				     u64 cycle_tstamp, u64 *frac);
+#ifndef HAVE_TIMEHIRES
+#define HAVE_TIMEHIRES
+struct timehires {
+	__s64		tv_nsec;		/* nanoseconds */
+	__u32		tv_frac;		/* fractional ns */
+	__u32		__res;
+};
+#endif
+
+#ifdef HAVE_HWTSFRAC
+static inline ktime_frac_t ns_to_ktime_frac(__u32 frac)
+{
+	ktime_frac_t time = { .tf32 = frac };
+	return time;
+}
+#endif
 
 #endif /* __DW1000_KCOMPAT_H */
