@@ -30,6 +30,7 @@
 #include <linux/timecounter.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/hwmon.h>
+#include "timehires.h"
 #include "kcompat.h"
 
 /* Supported channel page (UWB only) */
@@ -435,29 +436,9 @@ union dw1000_ldotune {
  * frequency (e.g. via a fractional tick count scaling register as
  * with most other PTP-supporting network adapters).  We therefore use
  * the cycle counter multiplier for frequency tuning.
- *
- * Using the full 40-bit counter value would limit us to a 24-bit
- * multiplier (in order to stay within the constraints of a 64-bit
- * result).  This is sufficient to express adjustments down to a
- * resolution of only around 60ppb.
- *
- * We therefore choose to report only the upper 31 actively counting
- * bits of the nominal 40-bit counter.  This allows for a 33-bit
- * multiplier (limited to 32 bits to avoid a 64x64 multiplication) and
- * hence for frequency adjustments down to around 0.25ppb, without
- * sacrificing any precision in timestamps read directly from the
- * SYS_TIME register.  For transmit and receive timestamps, we handle
- * the fractional portion of the timestamp (from the lower 9
- * LDE-calculated bits) as an additional correction.
  */
-#define DW1000_CYCLECOUNTER_FRAC_SHIFT 9
-#define DW1000_CYCLECOUNTER_FRAC_MASK ((1UL << DW1000_CYCLECOUNTER_FRAC_SHIFT) - 1)
-#define DW1000_CYCLECOUNTER_MASK CYCLECOUNTER_MASK(31)
-#define DW1000_CYCLECOUNTER_MULT 2150925128U /* Maximum 32-bit multiplier */
-#define DW1000_CYCLECOUNTER_SHIFT 28 /* Scale down to nanoseconds */
-#define DW1000_CYCLECOUNTER_TOTAL_SHIFT \
-	(DW1000_CYCLECOUNTER_SHIFT + DW1000_CYCLECOUNTER_FRAC_SHIFT)
-#define DW1000_CYCLECOUNTER_TOTAL_MASK ((1ULL << DW1000_CYCLECOUNTER_TOTAL_SHIFT) - 1)
+#define DW1000_CYCLECOUNTER_SIZE  40
+#define DW1000_CYCLECOUNTER_MULT  288692283805801088ULL
 
 /* Maximum multiplier adjustment
  *
@@ -677,10 +658,8 @@ struct dw1000_ptp {
 	struct ptp_clock *clock;
 	/* PTP clock information */
 	struct ptp_clock_info info;
-	/* Raw cycle counter */
-	struct cyclecounter cc;
-	/* Time counter */
-	struct timecounter tc;
+	/* High resolution time counter */
+	struct hires_counter tc;
 };
 
 /* DW1000 device */
