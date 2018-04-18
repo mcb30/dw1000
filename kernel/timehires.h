@@ -30,6 +30,8 @@
 #include "kcompat.h"
 
 
+typedef __u64 cycle_t;
+
 /**
  * struct hires_counter - hardware abstraction for a free running counter
  *

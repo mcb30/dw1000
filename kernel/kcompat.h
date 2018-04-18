@@ -39,8 +39,7 @@ struct timehires {
 #ifdef HAVE_HWTSFRAC
 static inline ktime_frac_t ns_to_ktime_frac(__u32 frac)
 {
-	ktime_frac_t time = { .tf32 = frac };
-	return time;
+	return (ktime_frac_t)(frac);
 }
 #endif
 
