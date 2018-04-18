@@ -1241,13 +1241,13 @@ static void dw1000_ptp_worker(struct work_struct *work)
 }
 
 /**
- * dw1000_ptp_adjfreq() - Adjust frequency of hardware clock
+ * dw1000_ptp_adjfine() - Adjust frequency of hardware clock
  *
  * @ptp:		PTP clock information
- * @delta:		Frequency offset in parts per billion
+ * @delta:		Frequency offset in ppm + 16bit fraction
  * @return:		0 on success or -errno
  */
-static int dw1000_ptp_adjfreq(struct ptp_clock_info *ptp, int32_t delta)
+static int dw1000_ptp_adjfine(struct ptp_clock_info *ptp, long delta)
 {
 	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
 	struct hires_counter *tc = &dw->ptp.tc;
@@ -1255,7 +1255,7 @@ static int dw1000_ptp_adjfreq(struct ptp_clock_info *ptp, int32_t delta)
 
 	/* Calculate multiplier value */
 	mult = (delta < 0) ? -delta : delta;
-	mult *= DW1000_CYCLECOUNTER_MULT / 1000000000ULL;
+	mult *= DW1000_CYCLECOUNTER_MULT / 65536000000ULL;
 	mult = (delta < 0) ? DW1000_CYCLECOUNTER_MULT - mult:
 			     DW1000_CYCLECOUNTER_MULT + mult;
 
@@ -1264,7 +1264,7 @@ static int dw1000_ptp_adjfreq(struct ptp_clock_info *ptp, int32_t delta)
 	hires_counter_setmult(tc, mult);
 	mutex_unlock(&dw->ptp.mutex);
 
-	dev_dbg(dw->dev, "adjust frequency %+d ppb: multiplier adj %llu\n",
+	dev_dbg(dw->dev, "adjust frequency %+ld sppm: multiplier adj %llu\n",
 		delta, (unsigned long long) mult);
 	return 0;
 }
@@ -1385,7 +1385,7 @@ static int dw1000_ptp_init(struct dw1000 *dw)
 	info->owner = THIS_MODULE;
 	info->max_adj = DW1000_PTP_MAX_ADJ;
 	snprintf(info->name, sizeof(info->name), "%s", dev_name(dw->dev));
-	info->adjfreq = dw1000_ptp_adjfreq;
+	info->adjfine = dw1000_ptp_adjfine;
 	info->adjtime = dw1000_ptp_adjtime;
 	info->gettime64 = dw1000_ptp_gettime;
 	info->settime64 = dw1000_ptp_settime;
