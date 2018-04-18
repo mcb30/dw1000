@@ -36,12 +36,23 @@ struct timehires {
 };
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
+typedef __u64	cycle_t;
+#endif
+
 #ifdef HAVE_HWTSFRAC
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
+static inline ktime_frac_t ns_to_ktime_frac(__u32 frac)
+{
+	return (ktime_frac_t)(frac);
+}
+#else
 static inline ktime_frac_t ns_to_ktime_frac(__u32 frac)
 {
 	ktime_frac_t time = { .tf32 = frac };
 	return time;
 }
+#endif
 #endif
 
 #endif /* __DW1000_KCOMPAT_H */
