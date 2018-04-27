@@ -1509,6 +1509,7 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 	tx->tx_buffer.data.len = skb->len;
 	tx->len = DW1000_TX_FCTRL0_TFLEN(skb->len + IEEE802154_FCS_LEN);
 	tx->data_complete = false;
+	tx->retries = 0;
 
 	/* Prepare timestamping */
 	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP))
@@ -1540,6 +1541,7 @@ static void dw1000_tx_data_complete(void *context)
 	struct dw1000_tx *tx = &dw->tx;
 	struct sk_buff *skb;
 	unsigned long flags;
+	int rc;
 
 	/* Acquire TX lock */
 	spin_lock_irqsave(&dw->tx_lock, flags);
@@ -1556,17 +1558,27 @@ static void dw1000_tx_data_complete(void *context)
 	 * sane hardware design.
 	 */
 	if (tx->check & DW1000_SYS_CTRL0_TXSTRT) {
-		dev_err_ratelimited(dw->dev, "TX ignored by hardware (%02x)\n",
-				    tx->check);
-		goto err_check;
-	}
+		tx->retries++;
+		dev_err_ratelimited(dw->dev, "TX ignored by hardware (%02x) "
+				    "on attempt %d\n", tx->check, tx->retries);
+		if (tx->retries > DW1000_TX_MAX_RETRIES)
+			goto err_check;
 
-	/* Mark data SPI message as complete */
-	tx->data_complete = true;
+		/* Resubmit the transmit instruction (without
+		 * repopulating the transmit data buffer).
+		 */
+		tx->tx_buffer.data.len = 0;
+		if ((rc = spi_async(dw->spi, &tx->data)) != 0)
+			goto err_retry;
+	} else {
+		/* Mark data SPI message as complete */
+		tx->data_complete = true;
+	}
 
 	spin_unlock_irqrestore(&dw->tx_lock, flags);
 	return;
 
+ err_retry:
  err_check:
  err_status:
 	skb = tx->skb;
