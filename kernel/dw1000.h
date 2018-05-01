@@ -78,6 +78,35 @@ struct dw1000_spi_transfers {
 	struct spi_transfer data;
 };
 
+/* EUI-64 extended address format */
+union dw1000_eui64 {
+	/* OTP values */
+	uint32_t otp[2];
+	/* Raw bytes */
+	uint8_t raw[8];
+	/* IEEE 802.15.4 EUI-64 address */
+	__le64 addr;
+};
+
+/* LDO tuning register format */
+union dw1000_ldotune {
+	/* OTP values */
+	uint32_t otp[2];
+	/* Raw bytes */
+	uint8_t raw[5];
+};
+
+/* Timestamp format */
+union dw1000_timestamp {
+	/* Cycle count */
+	__le64 cc;
+	/* Raw bytes */
+	uint8_t raw[5];
+};
+
+/* Timestamp mask */
+#define DW1000_TIMESTAMP_MASK 0xffffffffffUL
+
 /* Frame quality register format */
 struct dw1000_rx_fqual {
 	/* Standard deviation of noise */
@@ -90,30 +119,18 @@ struct dw1000_rx_fqual {
 	__le16 cir_pwr;
 } __packed;
 
-/* EUI-64 extended address format */
-union dw1000_eui64 {
-	/* OTP values */
-	uint32_t otp[2];
-	/* Raw bytes */
-	uint8_t raw[8];
-	/* IEEE 802.15.4 EUI-64 address */
-	__le64 addr;
-};
-
-/* Timestamp format */
-union dw1000_timestamp {
-	/* Cycle count */
-	__le64 cc;
-	/* Raw bytes */
-	uint8_t raw[5];
-};
-
-/* LDO tuning register format */
-union dw1000_ldotune {
-	/* OTP values */
-	uint32_t otp[2];
-	/* Raw bytes */
-	uint8_t raw[5];
+/* Receive time stamp register format */
+union dw1000_rx_time {
+	/* Receive time stamp */
+	union dw1000_timestamp rx_stamp;
+	struct {
+		/* Receive time stamp (padding) */
+		uint8_t pad[5];
+		/* First path index */
+		__le16 fp_index;
+		/* First path amplitude point 1 */
+		__le16 fp_ampl1;
+	} __packed;
 };
 
 /* Register files */
@@ -279,9 +296,9 @@ union dw1000_ldotune {
 
 /* Receive frame information register */
 #define DW1000_RX_FINFO_RXFLEN(val)		(((val) >> 0) & 0x7ff)
-
-/* Receive time stamp registers */
-#define DW1000_RX_STAMP			0x00
+#define DW1000_RX_FINFO_RXNSPL(val)		(((val) >> 11) & 0x3)
+#define DW1000_RX_FINFO_RXPSR(val)		(((val) >> 18) & 0x3)
+#define DW1000_RX_FINFO_RXPACC(val)		(((val) >> 20) & 0xfff)
 
 /* Transmit time stamp registers */
 #define DW1000_TX_STAMP			0x00
@@ -374,6 +391,8 @@ union dw1000_ldotune {
 /* Digital diagnostic registers */
 #define DW1000_EVC_CTRL			0x00
 #define DW1000_EVC_CTRL_EVC_EN			0x0001
+#define DW1000_EVC_OVR			0x0e
+#define DW1000_EVC_OVR_MASK			0x0fff
 
 /* Power management and system control registers */
 #define DW1000_PMSC_CTRL0		0x00
@@ -637,24 +656,28 @@ struct dw1000_tx {
 /* Receive descriptor */
 struct dw1000_rx {
 	/* Frame information */
-	uint32_t finfo;
+	__le32 finfo;
 	/* Timestamp */
-	union dw1000_timestamp time;
+	union dw1000_rx_time time;
 	/* Frame quality */
 	struct dw1000_rx_fqual fqual;
 	/* Overrun detection */
 	uint8_t rxovrr;
+	/* Overrun count */
+	__le16 evc_ovr;
 
 	/* Information SPI message */
 	struct spi_message info;
 	/* Frame information SPI transfer set */
 	struct dw1000_spi_transfers rx_finfo;
 	/* Timestamp SPI transfer set */
-	struct dw1000_spi_transfers rx_stamp;
+	struct dw1000_spi_transfers rx_time;
 	/* Frame quality transfer set */
 	struct dw1000_spi_transfers rx_fqual;
 	/* System status transfer set */
 	struct dw1000_spi_transfers sys_status;
+	/* Digital diagnostics transfer set */
+	struct dw1000_spi_transfers dig_diag;
 
 	/* Data SPI message */
 	struct spi_message data;
@@ -761,6 +784,8 @@ struct dw1000 {
 	struct dw1000_tx tx;
 	/* Receive descriptor */
 	struct dw1000_rx rx;
+	/* Receive overrun count */
+	unsigned int overruns;
 
 	/* PTP clock */
 	struct dw1000_ptp ptp;

@@ -1420,7 +1420,7 @@ static void dw1000_timestamp(struct dw1000 *dw,
 	cycle_t cc;
 
 	/* Get 5-byte timestamp */
-	cc = le64_to_cpu(time->cc);
+	cc = le64_to_cpu(time->cc) & DW1000_TIMESTAMP_MASK;
 
 	/* Convert timestamp to nanoseconds */
 	mutex_lock(&dw->ptp.mutex);
@@ -1689,12 +1689,14 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 	spi_message_init_no_memset(&rx->info);
 	dw1000_init_read(&rx->info, &rx->rx_finfo, DW1000_RX_FINFO, 0,
 			 &rx->finfo, sizeof(rx->finfo));
-	dw1000_init_read(&rx->info, &rx->rx_stamp, DW1000_RX_TIME,
-			 DW1000_RX_STAMP, &rx->time.raw, sizeof(rx->time.raw));
+	dw1000_init_read(&rx->info, &rx->rx_time, DW1000_RX_TIME, 0,
+			 &rx->time, sizeof(rx->time));
 	dw1000_init_read(&rx->info, &rx->rx_fqual, DW1000_RX_FQUAL, 0,
 			 &rx->fqual, sizeof(rx->fqual));
 	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS,
 			 DW1000_SYS_STATUS2, &rx->rxovrr, sizeof(rx->rxovrr));
+	dw1000_init_read(&rx->info, &rx->dig_diag, DW1000_DIG_DIAG,
+			 DW1000_EVC_OVR, &rx->evc_ovr, sizeof(rx->evc_ovr));
 
 	/* Prepare data SPI message */
 	spi_message_init_no_memset(&rx->data);
@@ -1718,6 +1720,7 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	uint32_t finfo;
 	uint16_t std_noise;
 	uint16_t fp_ampl2;
+	uint16_t evc_ovr;
 	size_t len;
 	unsigned int lqi;
 	int rc;
@@ -1731,6 +1734,7 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	len = DW1000_RX_FINFO_RXFLEN(finfo);
 	std_noise = le16_to_cpu(rx->fqual.std_noise);
 	fp_ampl2 = le16_to_cpu(rx->fqual.fp_ampl2);
+	evc_ovr = le16_to_cpu(rx->evc_ovr);
 
 	/* The double buffering implementation in the DW1000 is
 	 * somewhat flawed.  A packet arriving while there are no
@@ -1780,7 +1784,7 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 
 	/* Record hardware timestamp, if viable */
 	if (lqi >= dw->lqi_threshold) {
-		dw1000_timestamp(dw, &rx->time, skb_hwtstamps(skb));
+		dw1000_timestamp(dw, &rx->time.rx_stamp, skb_hwtstamps(skb));
 	} else {
 		dev_warn_ratelimited(dw->dev, "poor lqi %d (%#x / %#x) below "
 				     "threshold %d; ignoring timestamp\n", lqi,
