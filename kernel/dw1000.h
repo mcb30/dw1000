@@ -178,7 +178,7 @@ union dw1000_ldotune {
 #define DW1000_GPIO_CTRL	0x26
 #define DW1000_GPIO_CTRL_LEN	44
 #define DW1000_DRX_CONF		0x27
-#define DW1000_DRX_CONF_LEN	44
+#define DW1000_DRX_CONF_LEN	46
 #define DW1000_RF_CONF		0x28
 #define DW1000_RF_CONF_LEN	58
 #define DW1000_TX_CAL		0x2a
