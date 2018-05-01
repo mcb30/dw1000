@@ -545,9 +545,9 @@ struct dw1000_rate_config {
 	uint16_t drx_tune0b;
 	/* Digital receiver tuning register 1B value */
 	uint16_t drx_tune1b;
-	/* Digital receiver runing register 2 value */
+	/* Digital receiver tuning register 2 value */
 	uint8_t drx_tune2[DW1000_PRF_COUNT][4];
-	/* Digital receiver runing register 4H value */
+	/* Digital receiver tuning register 4H value */
 	uint16_t drx_tune4h;
 };
 
