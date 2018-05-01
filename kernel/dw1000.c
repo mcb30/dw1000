@@ -727,7 +727,6 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 			[DW1000_PRF_16M] = { 0x1d, 0x01, 0x1a, 0x37 },
 			[DW1000_PRF_64M] = { 0x96, 0x02, 0x3b, 0x37 },
 		},
-		.drx_tune4h = 0x0028,
 	},
 	[DW1000_RATE_850K] = {
 		.tdsym_ns = 1025,
@@ -738,7 +737,6 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 			[DW1000_PRF_16M] = { 0x9a, 0x00, 0x1a, 0x35 },
 			[DW1000_PRF_64M] = { 0x5e, 0x01, 0x3b, 0x35 },
 		},
-		.drx_tune4h = 0x0028,
 	},
 	[DW1000_RATE_6800K] = {
 		.tdsym_ns = 128,
@@ -749,8 +747,18 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 			[DW1000_PRF_16M] = { 0x2d, 0x00, 0x1a, 0x31 },
 			[DW1000_PRF_64M] = { 0x6b, 0x00, 0x3b, 0x31 },
 		},
-		.drx_tune4h = 0x0010,
 	},
+};
+
+/* Preamble symbol repetitions configurations */
+static const struct dw1000_txpsr_config dw1000_txpsr_configs[] = {
+	[DW1000_TXPSR_64]   = { .drx_tune4h = 0x0010 },
+	[DW1000_TXPSR_128]  = { .drx_tune4h = 0x0028 },
+	[DW1000_TXPSR_256]  = { .drx_tune4h = 0x0028 },
+	[DW1000_TXPSR_512]  = { .drx_tune4h = 0x0028 },
+	[DW1000_TXPSR_1024] = { .drx_tune4h = 0x0028 },
+	[DW1000_TXPSR_2048] = { .drx_tune4h = 0x0028 },
+	[DW1000_TXPSR_4096] = { .drx_tune4h = 0x0028 },
 };
 
 /* Fixed configurations */
@@ -818,6 +826,7 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	const struct dw1000_pcode_config *pcode_cfg;
 	const struct dw1000_prf_config *prf_cfg;
 	const struct dw1000_rate_config *rate_cfg;
+	const struct dw1000_txpsr_config *txpsr_cfg;
 	const struct dw1000_fixed_config *fixed_cfg;
 	uint8_t tx_power[sizeof(channel_cfg->tx_power[0])];
 	uint16_t lde_repc;
@@ -844,6 +853,7 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	pcode_cfg = &dw1000_pcode_configs[pcode];
 	prf_cfg = &dw1000_prf_configs[prf];
 	rate_cfg = &dw1000_rate_configs[rate];
+	txpsr_cfg = &dw1000_txpsr_configs[txpsr];
 	fixed_cfg = &dw1000_fixed_config;
 
 	/* Calculate inter-frame spacing */
@@ -968,7 +978,7 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	}
 	if (changed & DW1000_CONFIGURE_RATE) {
 		if ((rc = regmap_write(dw->drx_conf.regs, DW1000_DRX_TUNE4H,
-				       rate_cfg->drx_tune4h)) != 0)
+				       txpsr_cfg->drx_tune4h)) != 0)
 			return rc;
 	}
 
