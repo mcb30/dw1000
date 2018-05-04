@@ -1421,9 +1421,9 @@ static void dw1000_timestamp(struct dw1000 *dw,
 	cc = le64_to_cpu(time->cc) & DW1000_TIMESTAMP_MASK;
 
 	/* Check it is really a new value */
-	if (unlikely(cc == dw->rx_timestamp)) {
+	if (unlikely((cc & ~0xffff) == (dw->rx_timestamp & ~0xffff))) {
 		dev_warn_ratelimited(dw->dev, "STAMP SKIP: RX timestamp "
-				     "repetition detected!\n");
+					      "repetition detected!\n");
 		return;
 	}
 
