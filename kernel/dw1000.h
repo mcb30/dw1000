@@ -278,7 +278,15 @@ union dw1000_rx_time {
 #define DW1000_SYS_STATUS_TXPRS			0x00000020UL
 #define DW1000_SYS_STATUS_TXPHS			0x00000040UL
 #define DW1000_SYS_STATUS_TXFRS			0x00000080UL
+#define DW1000_SYS_STATUS_LDEDONE		0x00000400UL
+#define DW1000_SYS_STATUS_RXPHD			0x00000800UL
+#define DW1000_SYS_STATUS_RXPHE			0x00001000UL
 #define DW1000_SYS_STATUS_RXDFR			0x00002000UL
+#define DW1000_SYS_STATUS_RXFCG			0x00004000UL
+#define DW1000_SYS_STATUS_RXFCE			0x00008000UL
+#define DW1000_SYS_STATUS_RXRFSL		0x00010000UL
+#define DW1000_SYS_STATUS_RXRFTO		0x00020000UL
+#define DW1000_SYS_STATUS_LDEERR		0x00040000UL
 #define DW1000_SYS_STATUS_RXOVRR		0x00100000UL
 #define DW1000_SYS_STATUS_SLP2INIT		0x00800000UL
 #define DW1000_SYS_STATUS_RFPLL_LL		0x02000000UL
@@ -391,6 +399,7 @@ union dw1000_rx_time {
 /* Digital diagnostic registers */
 #define DW1000_EVC_CTRL			0x00
 #define DW1000_EVC_CTRL_EVC_EN			0x0001
+#define DW1000_EVC_CTRL_EVC_CLR			0x0002
 #define DW1000_EVC_OVR			0x0e
 #define DW1000_EVC_OVR_MASK			0x0fff
 
@@ -483,15 +492,17 @@ union dw1000_rx_time {
 #define DW1000_SAR_TEMP_MDEGC(sar, sar_23c) \
 	(23000 + ((100000 * ((sar) - (sar_23c)))) / 114)
 
-/* Maximum possible link quality indicator value */
+/* Maximum possible indicator values */
 #define DW1000_LQI_MAX 0xff
 
-/* Link quality indicator threshold
+/* Link quality indicator thresholds
  *
  * This is a somewhat arbitrary choice, providing a basic level of
  * protection against inaccurate receive timestamps.
  */
-#define DW1000_LQI_THRESHOLD_DEFAULT 16
+#define DW1000_SNR_THRESHOLD_DEFAULT	16
+#define DW1000_FPR_THRESHOLD_DEFAULT	64
+#define DW1000_NOISE_THRESHOLD_DEFAULT	256
 
 /* Pulse repetition frequencies */
 enum dw1000_prf {
@@ -655,14 +666,19 @@ struct dw1000_tx {
 
 /* Receive descriptor */
 struct dw1000_rx {
+	/* Received Link Quality */
+	uint8_t lqi;
+	/* Timestamp validity */
+	bool timestamp_valid;
+
+	/* RX status */
+	__le32 status;
 	/* Frame information */
 	__le32 finfo;
 	/* Timestamp */
 	union dw1000_rx_time time;
 	/* Frame quality */
 	struct dw1000_rx_fqual fqual;
-	/* Overrun detection */
-	uint8_t rxovrr;
 	/* Overrun count */
 	__le16 evc_ovr;
 
@@ -773,8 +789,16 @@ struct dw1000 {
 	enum dw1000_txpsr txpsr;
 	/* Smart power control enabled */
 	bool smart_power;
-	/* Link quality indicator threshold */
-	uint8_t lqi_threshold;
+	/* Signal to Noise Ratio indicator threshold */
+	uint16_t snr_threshold;
+	/* First Path Energy indicator threshold */
+	uint16_t fpr_threshold;
+	/* Link noise indicator threshold */
+	uint16_t noise_threshold;
+	/* Receive overrun state */
+	unsigned int rx_overruns;
+	/* Last seen RX timestamp */
+	uint64_t rx_timestamp;
 
 	/* Transmit lock */
 	spinlock_t tx_lock;
@@ -784,8 +808,6 @@ struct dw1000 {
 	struct dw1000_tx tx;
 	/* Receive descriptor */
 	struct dw1000_rx rx;
-	/* Receive overrun count */
-	unsigned int overruns;
 
 	/* PTP clock */
 	struct dw1000_ptp ptp;
