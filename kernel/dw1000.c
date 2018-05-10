@@ -1422,17 +1422,6 @@ static void dw1000_timestamp(struct dw1000 *dw,
 	/* Get 5-byte timestamp */
 	cc = le64_to_cpu(time->cc) & DW1000_TIMESTAMP_MASK;
 
-	/* Check it is really a new value */
-	if (unlikely(((cc - dw->rx_timestamp) &
-		     DW1000_TIMESTAMP_MASK) < 0xffff)) {
-		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
-				     "repetition detected\n");
-		return;
-	}
-
-	/* Remember timestamp */
-	dw->rx_timestamp = cc;
-
 	/* Convert timestamp to nanoseconds */
 	mutex_lock(&dw->ptp.mutex);
 	stamp = hires_counter_cyc2time(tc, cc);
@@ -1455,9 +1444,14 @@ static void dw1000_timestamp(struct dw1000 *dw,
 static void dw1000_rx_link_qual(struct dw1000 *dw)
 {
 	struct dw1000_rx *rx = &dw->rx;
-	uint32_t finfo, power, noise, ampl1, ampl2, ampl3, rxpacc, rxpsr;
+	uint32_t status, finfo, power, noise, ampl1, ampl2, ampl3, rxpacc, rxpsr;
 	unsigned int fpnrj = 0, fppwr = 0, fpr = 0, snr = 0;
-	unsigned int psr = 0, overruns = 0;
+	unsigned int psr = 0, hsrbp = 0;
+	cycle_t cc;
+
+	/* Assume frame and timestamp are valid */
+	rx->frame_valid = true;
+	rx->timestamp_valid = true;
 
 	/* Extract measurements */
 	finfo = le32_to_cpu(rx->finfo);
@@ -1466,26 +1460,42 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 	ampl3 = le16_to_cpu(rx->fqual.fp_ampl3);
 	power = le16_to_cpu(rx->fqual.cir_pwr);
 	noise = le16_to_cpu(rx->fqual.std_noise);
+	status = le32_to_cpu(rx->status);
 
 	/* Extra frame info */
 	rxpacc = DW1000_RX_FINFO_RXPACC(finfo);
 	rxpsr  = DW1000_RX_FINFO_RXPSR(finfo);
 
-	/* Sanity check */
-	if (noise == 0 || power == 0 || rxpacc == 0 || ampl1 == 0) {
-		dev_warn(dw->dev, "timestamp ignored: "
-				     "invalid KPI values\n");
+	/* Extract buffer id */
+	hsrbp = DW1000_RX_STATUS_HSRBP(status);
+
+	/* Get 5-byte timestamp */
+	cc = le64_to_cpu(rx->time.rx_stamp.cc) & DW1000_TIMESTAMP_MASK;
+
+	/* Check it is really a new value */
+	if (unlikely(((cc - dw->rx_timestamp[hsrbp]) &
+		      DW1000_TIMESTAMP_MASK) < DW1000_TIMESTAMP_MIN_CHANGE)) {
+		dev_warn_ratelimited(dw->dev, "Frame repetition #0 detected\n");
+		rx->timestamp_valid = false;
+		rx->frame_valid = false;
+		goto invalid;
+	}
+	if (unlikely(((cc - dw->rx_timestamp[hsrbp^1]) &
+		      DW1000_TIMESTAMP_MASK) < DW1000_TIMESTAMP_MIN_CHANGE)) {
+		dev_err_ratelimited(dw->dev, "Frame repetition #1 (!!!) detected\n");
+		rx->timestamp_valid = false;
+		rx->frame_valid = false;
 		goto invalid;
 	}
 
-	/* Check RX overruns */
-	overruns = le16_to_cpu(rx->evc_ovr);
-	if (unlikely(overruns != dw->rx_overruns)) {
-		dw->rx_overruns = overruns;
-		dev_warn(dw->dev, "timestamp ignored: "
-				     "RX overrun(s) detected\n");
+	/* Remember timestamp */
+	dw->rx_timestamp[hsrbp] = cc;
+
+	/* Sanity check */
+	if (noise == 0 || power == 0 || rxpacc == 0 || ampl1 == 0) {
+		dev_warn_ratelimited(dw->dev, "timestamp ignored: invalid KPI values\n");
 		goto invalid;
-        }
+	}
 
 	/* Get (expected) preamble symbol repetition count */
 	psr = dw1000_txpsrs[dw->txpsr];
@@ -1503,11 +1513,19 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 	/* The reported LQI is upper limited */
 	rx->lqi = (snr < DW1000_LQI_MAX) ? snr : DW1000_LQI_MAX;
 
-	/* Check Preamble length */
-	if (rxpacc < psr/4) {
+	/* Check Preamble length - with rather random limit */
+	if (rxpacc < psr/8) {
 		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
 				     "RXPACC %d < %d\n",
-				     rxpacc, psr/4);
+				     rxpacc, psr/8);
+		goto invalid;
+	}
+
+	/* Check background noise */
+	if (noise > dw->noise_threshold) {
+		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
+				     "NOISE %d > %d\n",
+				     noise, dw->noise_threshold);
 		goto invalid;
 	}
 
@@ -1526,17 +1544,6 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 				     fpr, dw->fpr_threshold);
 		goto invalid;
 	}
-
-	/* Check background noise */
-	if (noise > dw->noise_threshold) {
-		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
-				     "NOISE %d > %d\n",
-				     noise, dw->noise_threshold);
-		goto invalid;
-	}
-
-	/* Timestamp is good */
-	rx->timestamp_valid = true;
 
 	return;
 
@@ -1796,6 +1803,11 @@ static void dw1000_tx_complete(struct dw1000 *dw, struct sk_buff *skb)
 static int dw1000_rx_prepare(struct dw1000 *dw)
 {
 	static const uint8_t hrbpt = DW1000_SYS_CTRL3_HRBPT;
+	static const uint8_t rxena = DW1000_SYS_CTRL1_RXENAB;
+	static const uint32_t clear = cpu_to_le32(DW1000_RX_STATE_CLEAR);
+	static const uint32_t mask1 = cpu_to_le32(DW1000_SYS_MASK_MACTIVE);
+	static const uint32_t mask0 = 0;
+
 	struct dw1000_rx *rx = &dw->rx;
 
 	/* Initialise receive descriptor */
@@ -1809,10 +1821,10 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 			 &rx->time, sizeof(rx->time));
 	dw1000_init_read(&rx->info, &rx->rx_fqual, DW1000_RX_FQUAL, 0,
 			 &rx->fqual, sizeof(rx->fqual));
-	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS,
-			 DW1000_SYS_STATUS2, &rx->rxovrr, sizeof(rx->rxovrr));
 	dw1000_init_read(&rx->info, &rx->dig_diag, DW1000_DIG_DIAG,
 			 DW1000_EVC_OVR, &rx->evc_ovr, sizeof(rx->evc_ovr));
+	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS, 0,
+			 &rx->status, sizeof(rx->status));
 
 	/* Prepare data SPI message */
 	spi_message_init_no_memset(&rx->data);
@@ -1820,6 +1832,19 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 			 NULL, 0);
 	dw1000_init_write(&rx->data, &rx->sys_ctrl, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL3, &hrbpt, sizeof(hrbpt));
+
+	/* Prepare recovery SPI message */
+	spi_message_init_no_memset(&rx->rcvr);
+	dw1000_init_write(&rx->rcvr, &rx->rv_mask0, DW1000_SYS_MASK,
+			  0, &mask0, sizeof(mask0));
+	dw1000_init_write(&rx->rcvr, &rx->rv_status, DW1000_SYS_STATUS,
+			  0, &clear, sizeof(clear));
+	dw1000_init_write(&rx->rcvr, &rx->rv_mask1, DW1000_SYS_MASK,
+			  0, &mask1, sizeof(mask1));
+	dw1000_init_write(&rx->rcvr, &rx->rv_hrbpt, DW1000_SYS_CTRL,
+			  DW1000_SYS_CTRL3, &hrbpt, sizeof(hrbpt));
+	dw1000_init_write(&rx->rcvr, &rx->rv_rxenab, DW1000_SYS_CTRL,
+			  DW1000_SYS_CTRL1, &rxena, sizeof(rxena));
 
 	return 0;
 }
@@ -1833,7 +1858,7 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 {
 	struct dw1000_rx *rx = &dw->rx;
 	struct sk_buff *skb;
-	uint32_t finfo;
+	uint32_t finfo, status, overruns;
 	size_t len;
 	int rc;
 
@@ -1842,8 +1867,6 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 		dev_err(dw->dev, "RX information message failed: %d\n", rc);
 		goto err_info;
 	}
-	finfo = le32_to_cpu(rx->finfo);
-	len = DW1000_RX_FINFO_RXFLEN(finfo);
 
 	/* The double buffering implementation in the DW1000 is
 	 * somewhat flawed.  A packet arriving while there are no
@@ -1869,10 +1892,45 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	 * Instead, we simply discard the received frame and toggle
 	 * HRBPT as for a normally received frame.
 	 */
-	if (unlikely(rx->rxovrr & DW1000_SYS_STATUS2_RXOVRR)) {
-		dev_err_ratelimited(dw->dev, "RX overrun; aborting receive\n");
-		len = 0;
+
+	status = le32_to_cpu(rx->status);
+
+	/* RX out-of-sync */
+	if (!DW1000_RX_IN_SYNC(status)) {
+		dev_warn_ratelimited(dw->dev, "RX sync lost; recovering\n");
+		goto err_recover;
 	}
+
+	/* Check RX overruns */
+	overruns = le16_to_cpu(rx->evc_ovr);
+	if (unlikely(overruns != dw->rx_overruns)) {
+		dev_warn_ratelimited(dw->dev, "RX overrun(s) detected ; recovering\n");
+		dw->rx_overruns = overruns;
+		goto err_recover;
+        }
+
+	/* Double buffering overrun check */
+	if (unlikely(status & DW1000_SYS_STATUS_RXOVRR)) {
+		dev_warn_ratelimited(dw->dev, "RX overrun detected; recovering\n");
+		goto err_recover;
+	}
+
+	/* Data frame ready not set? */
+	if (unlikely((status & DW1000_SYS_STATUS_RXDFR) == 0)) {
+		dev_warn_ratelimited(dw->dev, "RXDFR not set; recovering\n");
+		goto err_recover;
+	}
+
+	/* Estimate link quality */
+	dw1000_rx_link_qual(dw);
+
+	/* Frame is invalid */
+	if (!rx->frame_valid)
+		goto err_recover;
+
+	/* Frame length */
+	finfo = le32_to_cpu(rx->finfo);
+	len = DW1000_RX_FINFO_RXFLEN(finfo);
 
 	/* Allocate socket buffer */
 	skb = dev_alloc_skb(len);
@@ -1881,9 +1939,6 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 		goto err_alloc;
 	}
 	skb_put(skb, len);
-
-	/* Estimate link quality */
-	dw1000_rx_link_qual(dw);
 
 	/* Record hardware timestamp, if viable */
 	if (rx->timestamp_valid)
@@ -1899,20 +1954,28 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 		goto err_data;
 	}
 
-	/* Discard if an overrun occurred */
-	if (!len)
-		goto err_discard;
-
 	/* Hand off to IEEE 802.15.4 stack */
 	ieee802154_rx_irqsafe(dw->hw, skb, rx->lqi);
 	return;
 
- err_discard:
  err_data:
 	dev_kfree_skb_any(skb);
  err_alloc:
  err_info:
 	return;
+
+ err_recover:
+	/* Send recovery SPI message */
+	if (!DW1000_RX_IN_SYNC(status)) {
+		if ((rc = spi_sync(dw->spi, &rx->rcvr)) != 0) {
+			dev_err(dw->dev, "RX recovery#1 failed: %d\n", rc);
+		}
+	}
+
+	/* Send recovery SPI message */
+	if ((rc = spi_sync(dw->spi, &rx->rcvr)) != 0) {
+		dev_err(dw->dev, "RX recovery#2 failed: %d\n", rc);
+	}
 }
 
 /******************************************************************************
@@ -2008,9 +2071,7 @@ static int dw1000_start(struct ieee802154_hw *hw)
 
 	/* Enable interrupt generation */
 	if ((rc = regmap_write(dw->sys_mask.regs, 0,
-			       (DW1000_SYS_MASK_MTXFRS |
-				DW1000_SYS_MASK_MRXDFR |
-				DW1000_SYS_MASK_MRXOVRR))) != 0)
+			       DW1000_SYS_MASK_MACTIVE)) != 0)
 		goto err_sys_mask;
 
 	/* Enable receiver */
