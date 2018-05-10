@@ -278,7 +278,15 @@ union dw1000_rx_time {
 #define DW1000_SYS_STATUS_TXPRS			0x00000020UL
 #define DW1000_SYS_STATUS_TXPHS			0x00000040UL
 #define DW1000_SYS_STATUS_TXFRS			0x00000080UL
+#define DW1000_SYS_STATUS_LDEDONE		0x00000400UL
+#define DW1000_SYS_STATUS_RXPHD			0x00000800UL
+#define DW1000_SYS_STATUS_RXPHE			0x00001000UL
 #define DW1000_SYS_STATUS_RXDFR			0x00002000UL
+#define DW1000_SYS_STATUS_RXFCG			0x00004000UL
+#define DW1000_SYS_STATUS_RXFCE			0x00008000UL
+#define DW1000_SYS_STATUS_RXRFSL		0x00010000UL
+#define DW1000_SYS_STATUS_RXRFTO		0x00020000UL
+#define DW1000_SYS_STATUS_LDEERR		0x00040000UL
 #define DW1000_SYS_STATUS_RXOVRR		0x00100000UL
 #define DW1000_SYS_STATUS_SLP2INIT		0x00800000UL
 #define DW1000_SYS_STATUS_RFPLL_LL		0x02000000UL
@@ -666,14 +674,14 @@ struct dw1000_rx {
 	/* Timestamp validity */
 	bool timestamp_valid;
 
+	/* RX status */
+	__le32 status;
 	/* Frame information */
 	__le32 finfo;
 	/* Timestamp */
 	union dw1000_rx_time time;
 	/* Frame quality */
 	struct dw1000_rx_fqual fqual;
-	/* Overrun detection */
-	uint8_t rxovrr;
 	/* Overrun count */
 	__le16 evc_ovr;
 
