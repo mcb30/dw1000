@@ -391,6 +391,7 @@ union dw1000_rx_time {
 /* Digital diagnostic registers */
 #define DW1000_EVC_CTRL			0x00
 #define DW1000_EVC_CTRL_EVC_EN			0x0001
+#define DW1000_EVC_CTRL_EVC_CLR			0x0002
 #define DW1000_EVC_OVR			0x0e
 #define DW1000_EVC_OVR_MASK			0x0fff
 
@@ -483,15 +484,35 @@ union dw1000_rx_time {
 #define DW1000_SAR_TEMP_MDEGC(sar, sar_23c) \
 	(23000 + ((100000 * ((sar) - (sar_23c)))) / 114)
 
+/* RX Channel Impulse Power scaling factor */
+#define DW1000_RX_CIR_PWR_SCALE 17
+
 /* Maximum possible link quality indicator value */
 #define DW1000_LQI_MAX 0xff
 
-/* Link quality indicator threshold
+/* Link quality indicator thresholds
  *
  * This is a somewhat arbitrary choice, providing a basic level of
  * protection against inaccurate receive timestamps.
  */
-#define DW1000_LQI_THRESHOLD_DEFAULT 16
+#define DW1000_SNR_THRESHOLD_DEFAULT	16
+#define DW1000_FPR_THRESHOLD_DEFAULT	64
+#define DW1000_NOISE_THRESHOLD_DEFAULT	256
+
+/* Timestamp repetition threshold
+ *
+ * Timestamps within this number of cycles will be considered to be
+ * erroneous repetitions of earlier timestamps.
+ */
+#define DW1000_TIMESTAMP_REPETITION_THRESHOLD 0xffff
+
+/* Receive preamble accumulation threshold
+ *
+ * The receive timestamp will be considered unreliable if fewer than
+ * this fraction of the expected number of preamble symbols are
+ * accumulated.
+ */
+#define DW1000_RXPACC_THRESHOLD 4
 
 /* Pulse repetition frequencies */
 enum dw1000_prf {
@@ -655,6 +676,11 @@ struct dw1000_tx {
 
 /* Receive descriptor */
 struct dw1000_rx {
+	/* Received Link Quality */
+	uint8_t lqi;
+	/* Timestamp validity */
+	bool timestamp_valid;
+
 	/* Frame information */
 	__le32 finfo;
 	/* Timestamp */
@@ -773,8 +799,16 @@ struct dw1000 {
 	enum dw1000_txpsr txpsr;
 	/* Smart power control enabled */
 	bool smart_power;
-	/* Link quality indicator threshold */
-	uint8_t lqi_threshold;
+	/* Signal to Noise Ratio indicator threshold */
+	uint16_t snr_threshold;
+	/* First Path Energy indicator threshold */
+	uint16_t fpr_threshold;
+	/* Link noise indicator threshold */
+	uint16_t noise_threshold;
+	/* Receive overrun state */
+	unsigned int rx_overruns;
+	/* Last seen RX timestamp */
+	uint64_t rx_timestamp;
 
 	/* Transmit lock */
 	spinlock_t tx_lock;
@@ -784,8 +818,6 @@ struct dw1000 {
 	struct dw1000_tx tx;
 	/* Receive descriptor */
 	struct dw1000_rx rx;
-	/* Receive overrun count */
-	unsigned int overruns;
 
 	/* PTP clock */
 	struct dw1000_ptp ptp;
