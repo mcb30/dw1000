@@ -1799,10 +1799,10 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 			 &rx->time, sizeof(rx->time));
 	dw1000_init_read(&rx->info, &rx->rx_fqual, DW1000_RX_FQUAL, 0,
 			 &rx->fqual, sizeof(rx->fqual));
-	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS,
-			 DW1000_SYS_STATUS2, &rx->rxovrr, sizeof(rx->rxovrr));
 	dw1000_init_read(&rx->info, &rx->dig_diag, DW1000_DIG_DIAG,
 			 DW1000_EVC_OVR, &rx->evc_ovr, sizeof(rx->evc_ovr));
+	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS, 0,
+			 &rx->status, sizeof(rx->status));
 
 	/* Prepare data SPI message */
 	spi_message_init_no_memset(&rx->data);
@@ -1823,7 +1823,7 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 {
 	struct dw1000_rx *rx = &dw->rx;
 	struct sk_buff *skb;
-	uint32_t finfo;
+	uint32_t finfo, status;
 	size_t len;
 	int rc;
 
@@ -1832,8 +1832,6 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 		dev_err(dw->dev, "RX information message failed: %d\n", rc);
 		goto err_info;
 	}
-	finfo = le32_to_cpu(rx->finfo);
-	len = DW1000_RX_FINFO_RXFLEN(finfo);
 
 	/* The double buffering implementation in the DW1000 is
 	 * somewhat flawed.  A packet arriving while there are no
@@ -1859,10 +1857,23 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	 * Instead, we simply discard the received frame and toggle
 	 * HRBPT as for a normally received frame.
 	 */
-	if (unlikely(rx->rxovrr & DW1000_SYS_STATUS2_RXOVRR)) {
-		dev_err_ratelimited(dw->dev, "RX overrun; aborting receive\n");
-		len = 0;
+
+	status = le32_to_cpu(rx->status);
+
+	/* Double buffering overrun check */
+	if (unlikely(status & DW1000_SYS_STATUS_RXOVRR)) {
+		dev_err(dw->dev, "RX overrun; recovering\n");
+		goto err_recover;
 	}
+
+	/* Data frame ready not set? */
+	if (unlikely((status & DW1000_SYS_STATUS_RXDFR) == 0)) {
+		dev_err(dw->dev, "RXDFR not set; continue anyway\n");
+	}
+
+	/* Frame length */
+	finfo = le32_to_cpu(rx->finfo);
+	len = DW1000_RX_FINFO_RXFLEN(finfo);
 
 	/* Allocate socket buffer */
 	skb = dev_alloc_skb(len);
@@ -1889,20 +1900,26 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 		goto err_data;
 	}
 
-	/* Discard if an overrun occurred */
-	if (!len)
-		goto err_discard;
-
 	/* Hand off to IEEE 802.15.4 stack */
 	ieee802154_rx_irqsafe(dw->hw, skb, rx->lqi);
 	return;
 
- err_discard:
  err_data:
 	dev_kfree_skb_any(skb);
  err_alloc:
  err_info:
 	return;
+
+ err_recover:
+	/* Toggle HRBPT twice */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
+			DW1000_SYS_CTRL3_HRBPT)) != 0) {
+		dev_err(dw->dev, "RX recovery #1 failed: %d\n", rc);
+	}
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
+			DW1000_SYS_CTRL3_HRBPT)) != 0) {
+		dev_err(dw->dev, "RX recovery #2 failed: %d\n", rc);
+	}
 }
 
 /******************************************************************************
