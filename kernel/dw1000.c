@@ -1422,6 +1422,17 @@ static void dw1000_timestamp(struct dw1000 *dw,
 	/* Get 5-byte timestamp */
 	cc = le64_to_cpu(time->cc) & DW1000_TIMESTAMP_MASK;
 
+	/* Check it is really a new value */
+	if (unlikely(((cc - dw->rx_timestamp) &
+		     DW1000_TIMESTAMP_MASK) < 0xffff)) {
+		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
+				     "repetition detected\n");
+		return;
+	}
+
+	/* Remember timestamp */
+	dw->rx_timestamp = cc;
+
 	/* Convert timestamp to nanoseconds */
 	mutex_lock(&dw->ptp.mutex);
 	stamp = hires_counter_cyc2time(tc, cc);
@@ -1434,6 +1445,101 @@ static void dw1000_timestamp(struct dw1000 *dw,
 	hwtstamps->hwtsfrac = ns_to_ktime_frac(stamp.tv_frac);
 #endif
 }
+
+/**
+ * dw1000_rx_link_qual() - Check RX quality and calculate KPIs, as
+ *			   described in the DW1000 manual section 4.7.
+ *
+ * @dw:			DW1000 device
+ */
+static void dw1000_rx_link_qual(struct dw1000 *dw)
+{
+	struct dw1000_rx *rx = &dw->rx;
+	uint32_t finfo, power, noise, ampl1, ampl2, ampl3;
+	uint32_t rxpacc, rxpsr, fpnrj, fppwr, overruns;
+	unsigned int snr, fpr, psr;
+
+	/* Extract measurements */
+	finfo = le32_to_cpu(rx->finfo);
+	ampl1 = le16_to_cpu(rx->time.fp_ampl1);
+	ampl2 = le16_to_cpu(rx->fqual.fp_ampl2);
+	ampl3 = le16_to_cpu(rx->fqual.fp_ampl3);
+	power = le16_to_cpu(rx->fqual.cir_pwr);
+	noise = le16_to_cpu(rx->fqual.std_noise);
+
+	/* Extra frame info */
+	rxpacc = DW1000_RX_FINFO_RXPACC(finfo);
+	rxpsr  = DW1000_RX_FINFO_RXPSR(finfo);
+
+	/* Get (expected) preamble symbol repetition count */
+	psr = dw1000_txpsrs[dw->txpsr];
+
+	/* Calculate RX signal estimates */
+	fpnrj = ampl1*ampl1 + ampl2*ampl2 + ampl3*ampl3;
+	fppwr = fpnrj / (rxpacc*rxpacc + 1);
+
+	/* Calculate a simplistic S/N estimate */
+	snr = fppwr / (noise + 1);
+
+	/* Calculate a simplistic 8bit FP/Energy estimate */
+	fpr = (fpnrj / power) >> (DW1000_RX_CIR_PWR_SCALE - 8);
+
+	/* The reported LQI is upper limited */
+	rx->lqi = (snr < DW1000_LQI_MAX) ? snr : DW1000_LQI_MAX;
+
+	/* Timestamp is good by default */
+	rx->timestamp_valid = true;
+
+	/* Check Preamble length */
+	if (rxpacc < psr/4) {
+		rx->timestamp_valid = false;
+		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
+				     "RXPACC %d < %d\n",
+				     rxpacc, psr/4);
+	}
+
+	/* Check S/N Ratio */
+	if (snr < dw->snr_threshold) {
+		rx->timestamp_valid = false;
+		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
+				     "S/N %d < %d\n",
+				     snr, dw->snr_threshold);
+	}
+
+	/* Check F/P to Pwr Ratio */
+	if (fpr < dw->fpr_threshold) {
+		rx->timestamp_valid = false;
+		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
+				     "F/P %d < %d\n",
+				     fpr, dw->fpr_threshold);
+	}
+
+	/* Check background noise */
+	if (noise > dw->noise_threshold) {
+		rx->timestamp_valid = false;
+		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
+				     "NOISE %d > %d\n",
+				     noise, dw->noise_threshold);
+	}
+
+	/* Check RX overruns */
+	overruns = le16_to_cpu(rx->evc_ovr);
+        if (unlikely(overruns != dw->rx_overruns)) {
+		dw->rx_overruns = overruns;
+		rx->timestamp_valid = false;
+		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
+				     "RX overrun(s) detected\n");
+        }
+
+	if (!rx->timestamp_valid) {
+		dev_dbg_ratelimited(dw->dev,
+				    "SNR:%d FPR:%d FPNRJ:%d FPPWR:%d "
+				    "POWER:%d NOISE:%d RXPACC:%d\n",
+				    snr, fpr, fpnrj, fppwr,
+				    power, noise, rxpacc);
+	}
+}
+
 
 /******************************************************************************
  *
@@ -1693,10 +1799,10 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 			 &rx->time, sizeof(rx->time));
 	dw1000_init_read(&rx->info, &rx->rx_fqual, DW1000_RX_FQUAL, 0,
 			 &rx->fqual, sizeof(rx->fqual));
-	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS,
-			 DW1000_SYS_STATUS2, &rx->rxovrr, sizeof(rx->rxovrr));
 	dw1000_init_read(&rx->info, &rx->dig_diag, DW1000_DIG_DIAG,
 			 DW1000_EVC_OVR, &rx->evc_ovr, sizeof(rx->evc_ovr));
+	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS, 0,
+			 &rx->status, sizeof(rx->status));
 
 	/* Prepare data SPI message */
 	spi_message_init_no_memset(&rx->data);
@@ -1717,12 +1823,8 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 {
 	struct dw1000_rx *rx = &dw->rx;
 	struct sk_buff *skb;
-	uint32_t finfo;
-	uint16_t std_noise;
-	uint16_t fp_ampl2;
-	uint16_t evc_ovr;
+	uint32_t finfo, status;
 	size_t len;
-	unsigned int lqi;
 	int rc;
 
 	/* Send information SPI message */
@@ -1730,11 +1832,6 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 		dev_err(dw->dev, "RX information message failed: %d\n", rc);
 		goto err_info;
 	}
-	finfo = le32_to_cpu(rx->finfo);
-	len = DW1000_RX_FINFO_RXFLEN(finfo);
-	std_noise = le16_to_cpu(rx->fqual.std_noise);
-	fp_ampl2 = le16_to_cpu(rx->fqual.fp_ampl2);
-	evc_ovr = le16_to_cpu(rx->evc_ovr);
 
 	/* The double buffering implementation in the DW1000 is
 	 * somewhat flawed.  A packet arriving while there are no
@@ -1760,10 +1857,23 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	 * Instead, we simply discard the received frame and toggle
 	 * HRBPT as for a normally received frame.
 	 */
-	if (unlikely(rx->rxovrr & DW1000_SYS_STATUS2_RXOVRR)) {
-		dev_err_ratelimited(dw->dev, "RX overrun; aborting receive\n");
-		len = 0;
+
+	status = le32_to_cpu(rx->status);
+
+	/* Double buffering overrun check */
+	if (unlikely(status & DW1000_SYS_STATUS_RXOVRR)) {
+		dev_err(dw->dev, "RX overrun; recovering\n");
+		goto err_recover;
 	}
+
+	/* Data frame ready not set? */
+	if (unlikely((status & DW1000_SYS_STATUS_RXDFR) == 0)) {
+		dev_err(dw->dev, "RXDFR not set; continue anyway\n");
+	}
+
+	/* Frame length */
+	finfo = le32_to_cpu(rx->finfo);
+	len = DW1000_RX_FINFO_RXFLEN(finfo);
 
 	/* Allocate socket buffer */
 	skb = dev_alloc_skb(len);
@@ -1774,22 +1884,11 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	skb_put(skb, len);
 
 	/* Estimate link quality */
-	if (std_noise) {
-		lqi = (fp_ampl2 / std_noise);
-		if (lqi > DW1000_LQI_MAX)
-			lqi = DW1000_LQI_MAX;
-	} else {
-		lqi = 0;
-	}
+	dw1000_rx_link_qual(dw);
 
 	/* Record hardware timestamp, if viable */
-	if (lqi >= dw->lqi_threshold) {
+	if (rx->timestamp_valid)
 		dw1000_timestamp(dw, &rx->time.rx_stamp, skb_hwtstamps(skb));
-	} else {
-		dev_warn_ratelimited(dw->dev, "poor lqi %d (%#x / %#x) below "
-				     "threshold %d; ignoring timestamp\n", lqi,
-				     fp_ampl2, std_noise, dw->lqi_threshold);
-	}
 
 	/* Update data SPI message */
 	rx->rx_buffer.data.rx_buf = skb->data;
@@ -1801,20 +1900,26 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 		goto err_data;
 	}
 
-	/* Discard if an overrun occurred */
-	if (!len)
-		goto err_discard;
-
 	/* Hand off to IEEE 802.15.4 stack */
-	ieee802154_rx_irqsafe(dw->hw, skb, lqi);
+	ieee802154_rx_irqsafe(dw->hw, skb, rx->lqi);
 	return;
 
- err_discard:
  err_data:
 	dev_kfree_skb_any(skb);
  err_alloc:
  err_info:
 	return;
+
+ err_recover:
+	/* Toggle HRBPT twice */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
+			DW1000_SYS_CTRL3_HRBPT)) != 0) {
+		dev_err(dw->dev, "RX recovery #1 failed: %d\n", rc);
+	}
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
+			DW1000_SYS_CTRL3_HRBPT)) != 0) {
+		dev_err(dw->dev, "RX recovery #2 failed: %d\n", rc);
+	}
 }
 
 /******************************************************************************
@@ -2393,30 +2498,74 @@ static ssize_t dw1000_store_smart_power(struct device *dev,
 }
 static DW1000_ATTR_RW(smart_power, 0644);
 
-/* Link quality indicator threshold */
-static ssize_t dw1000_show_lqi_threshold(struct device *dev,
+/* Signal to Noise Ratio indicator threshold */
+static ssize_t dw1000_show_snr_threshold(struct device *dev,
 					 struct device_attribute *attr,
 					 char *buf)
 {
 	struct dw1000 *dw = to_dw1000(dev);
 
-	return sprintf(buf, "%d\n", dw->lqi_threshold);
+	return sprintf(buf, "%d\n", dw->snr_threshold);
 }
-static ssize_t dw1000_store_lqi_threshold(struct device *dev,
+static ssize_t dw1000_store_snr_threshold(struct device *dev,
 					struct device_attribute *attr,
 					const char *buf, size_t count)
 {
 	struct dw1000 *dw = to_dw1000(dev);
-	unsigned int lqi_threshold;
+	unsigned int snr_threshold;
 
-	if (kstrtouint(buf, 0, &lqi_threshold) < 0)
+	if (kstrtouint(buf, 0, &snr_threshold) < 0)
 		return -EINVAL;
-	if (lqi_threshold > DW1000_LQI_MAX)
-		return -EINVAL;
-	dw->lqi_threshold = lqi_threshold;
+	dw->snr_threshold = snr_threshold;
 	return count;
 }
-static DW1000_ATTR_RW(lqi_threshold, 0644);
+static DW1000_ATTR_RW(snr_threshold, 0644);
+
+/* First Path to Total Energy Ratio indicator threshold */
+static ssize_t dw1000_show_fpr_threshold(struct device *dev,
+					 struct device_attribute *attr,
+					 char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "%d\n", dw->fpr_threshold);
+}
+static ssize_t dw1000_store_fpr_threshold(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	unsigned int fpr_threshold;
+
+	if (kstrtouint(buf, 0, &fpr_threshold) < 0)
+		return -EINVAL;
+	dw->fpr_threshold = fpr_threshold;
+	return count;
+}
+static DW1000_ATTR_RW(fpr_threshold, 0644);
+
+/* Noise threshold */
+static ssize_t dw1000_show_noise_threshold(struct device *dev,
+					   struct device_attribute *attr,
+					   char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "%d\n", dw->noise_threshold);
+}
+static ssize_t dw1000_store_noise_threshold(struct device *dev,
+					    struct device_attribute *attr,
+					    const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	unsigned int noise_threshold;
+
+	if (kstrtouint(buf, 0, &noise_threshold) < 0)
+		return -EINVAL;
+	dw->noise_threshold = noise_threshold;
+	return count;
+}
+static DW1000_ATTR_RW(noise_threshold, 0644);
 
 /* Attribute list */
 static struct attribute *dw1000_attrs[] = {
@@ -2425,7 +2574,9 @@ static struct attribute *dw1000_attrs[] = {
 	&dev_attr_rate.attr,
 	&dev_attr_txpsr.attr,
 	&dev_attr_smart_power.attr,
-	&dev_attr_lqi_threshold.attr,
+	&dev_attr_snr_threshold.attr,
+	&dev_attr_fpr_threshold.attr,
+	&dev_attr_noise_threshold.attr,
 	NULL
 };
 
@@ -2791,6 +2942,13 @@ static int dw1000_init(struct dw1000 *dw)
 				     mask, value)) != 0)
 		return rc;
 
+	/* Clear diagnostic counters */
+	mask = DW1000_EVC_CTRL_EVC_CLR;
+	value = DW1000_EVC_CTRL_EVC_CLR;
+	if ((rc = regmap_update_bits(dw->dig_diag.regs, DW1000_EVC_CTRL,
+				     mask, value)) != 0)
+		return rc;
+
 	/* Enable diagnostic counters */
 	mask = DW1000_EVC_CTRL_EVC_EN;
 	value = DW1000_EVC_CTRL_EVC_EN;
@@ -2879,7 +3037,9 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->rate = DW1000_RATE_6800K;
 	dw->txpsr = DW1000_TXPSR_DEFAULT;
 	dw->smart_power = true;
-	dw->lqi_threshold = DW1000_LQI_THRESHOLD_DEFAULT;
+	dw->snr_threshold = DW1000_SNR_THRESHOLD_DEFAULT;
+	dw->fpr_threshold = DW1000_FPR_THRESHOLD_DEFAULT;
+	dw->noise_threshold = DW1000_NOISE_THRESHOLD_DEFAULT;
 	spin_lock_init(&dw->tx_lock);
 	INIT_WORK(&dw->irq_work, dw1000_irq_worker);
 	INIT_DELAYED_WORK(&dw->ptp_work, dw1000_ptp_worker);
