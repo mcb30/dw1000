@@ -2346,6 +2346,19 @@ static const struct hwmon_chip_info dw1000_hwmon_chip = {
 #define DW1000_ATTR_RW(_name, _mode) \
 	DEVICE_ATTR(_name, _mode, dw1000_show_##_name, dw1000_store_##_name)
 
+#define DW1000_ATTR_RO(_name, _mode) \
+	DEVICE_ATTR(_name, _mode, dw1000_show_##_name, NULL)
+
+/* Channel */
+static ssize_t dw1000_show_channel(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "%d\n", dw->channel);
+}
+static DW1000_ATTR_RO(channel, 0444);
+
 /* Preamble code */
 static ssize_t dw1000_show_pcode(struct device *dev,
 				 struct device_attribute *attr, char *buf)
@@ -2546,6 +2559,7 @@ static DW1000_ATTR_RW(noise_threshold, 0644);
 
 /* Attribute list */
 static struct attribute *dw1000_attrs[] = {
+	&dev_attr_channel.attr,
 	&dev_attr_pcode.attr,
 	&dev_attr_prf.attr,
 	&dev_attr_rate.attr,
