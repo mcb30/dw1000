@@ -683,6 +683,34 @@ struct dw1000_regmap {
 	const struct dw1000_regmap_config *config;
 };
 
+/* Timestamp info */
+struct dw1000_tsinfo {
+	/* Raw hardware timestamp */
+	cycle_t rawts;
+	/* Link Quality Indicator */
+	uint16_t lqi;
+	/* Signal-to-Noise estimate */
+	uint16_t snr;
+	/* First Path Quality estimate */
+	uint16_t fpr;
+	/* Standard Deviation of Noise */
+	uint16_t noise;
+	/* Preamble Accumulation Count */
+	uint16_t rxpacc;
+	/* First Path Index */
+	uint16_t fp_index;
+	/* First Path Amplitude #1 */
+	uint16_t fp_ampl1;
+	/* First Path Amplitude #2 */
+	uint16_t fp_ampl2;
+	/* First Path Amplitude #3 */
+	uint16_t fp_ampl3;
+	/* Channel Impulse Response Power */
+	uint32_t cir_pwr;
+	/* First Patch Impulse Power */
+	uint32_t fp_pwr;
+};
+
 /* Transmit descriptor */
 struct dw1000_tx {
 	/* Socket buffer */
@@ -694,6 +722,8 @@ struct dw1000_tx {
 	uint8_t check;
 	/* Timestamp */
 	union dw1000_timestamp time;
+	/* Timestamp info */
+	struct dw1000_tsinfo tsinfo;
 
 	/* Data SPI message */
 	struct spi_message data;
@@ -743,6 +773,8 @@ struct dw1000_rx {
 	__le32 finfo;
 	/* Timestamp */
 	union dw1000_rx_time time;
+	/* Timestamp info */
+	struct dw1000_tsinfo tsinfo;
 	/* Frame quality */
 	struct dw1000_rx_fqual fqual;
 	/* Overrun count */
