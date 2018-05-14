@@ -107,6 +107,9 @@ union dw1000_timestamp {
 /* Timestamp mask */
 #define DW1000_TIMESTAMP_MASK 0xffffffffffUL
 
+/* Minimum reasonable change */
+#define DW1000_TIMESTAMP_MIN_CHANGE 0xffffUL
+
 /* Frame quality register format */
 struct dw1000_rx_fqual {
 	/* Standard deviation of noise */
@@ -272,17 +275,34 @@ union dw1000_rx_time {
 #define DW1000_SYS_MASK_MRXDFR			0x00002000UL
 #define DW1000_SYS_MASK_MRXOVRR			0x00100000UL
 
+#define DW1000_SYS_MASK_MACTIVE		( \
+	DW1000_SYS_MASK_MTXFRS		| \
+	DW1000_SYS_MASK_MRXDFR		| \
+	DW1000_SYS_MASK_MRXOVRR 	)
+
 /* System event status register */
 #define DW1000_SYS_STATUS_CPLOCK		0x00000002UL
 #define DW1000_SYS_STATUS_TXFRB			0x00000010UL
 #define DW1000_SYS_STATUS_TXPRS			0x00000020UL
 #define DW1000_SYS_STATUS_TXPHS			0x00000040UL
 #define DW1000_SYS_STATUS_TXFRS			0x00000080UL
+#define DW1000_SYS_STATUS_RXPRD			0x00000100UL
+#define DW1000_SYS_STATUS_RXSFDD		0x00000200UL
+#define DW1000_SYS_STATUS_LDEDONE		0x00000400UL
+#define DW1000_SYS_STATUS_RXPHD			0x00000800UL
+#define DW1000_SYS_STATUS_RXPHE			0x00001000UL
 #define DW1000_SYS_STATUS_RXDFR			0x00002000UL
+#define DW1000_SYS_STATUS_RXFCG			0x00004000UL
+#define DW1000_SYS_STATUS_RXFCE			0x00008000UL
+#define DW1000_SYS_STATUS_RXRFSL		0x00010000UL
+#define DW1000_SYS_STATUS_RXRFTO		0x00020000UL
+#define DW1000_SYS_STATUS_LDEERR		0x00040000UL
 #define DW1000_SYS_STATUS_RXOVRR		0x00100000UL
+#define DW1000_SYS_STATUS_RXPTO			0x00200000UL
 #define DW1000_SYS_STATUS_SLP2INIT		0x00800000UL
-#define DW1000_SYS_STATUS_RFPLL_LL		0x02000000UL
+#define DW1000_SYS_STATUS_RFPLL_LL		0x01000000UL
 #define DW1000_SYS_STATUS_CLKPLL_LL		0x02000000UL
+#define DW1000_SYS_STATUS_RXSFDTO		0x04000000UL
 #define DW1000_SYS_STATUS_HSRBP			0x40000000UL
 #define DW1000_SYS_STATUS_ICRBP			0x80000000UL
 #define DW1000_SYS_STATUS0		0x00
@@ -291,8 +311,33 @@ union dw1000_rx_time {
 #define DW1000_SYS_STATUS0_TXPRS		0x20
 #define DW1000_SYS_STATUS0_TXPHS		0x40
 #define DW1000_SYS_STATUS0_TXFRS		0x80
+#define DW1000_SYS_STATUS1		0x01
 #define DW1000_SYS_STATUS2		0x02
 #define DW1000_SYS_STATUS2_RXOVRR		0x10
+
+/* Clear-on-write RX status bits */
+#define DW1000_RX_STATE_CLEAR		( \
+	DW1000_SYS_STATUS_RXPRD		| \
+	DW1000_SYS_STATUS_RXSFDD 	| \
+	DW1000_SYS_STATUS_LDEDONE	| \
+	DW1000_SYS_STATUS_RXPHD		| \
+	DW1000_SYS_STATUS_RXPHE		| \
+	DW1000_SYS_STATUS_RXDFR		| \
+	DW1000_SYS_STATUS_RXFCG		| \
+	DW1000_SYS_STATUS_RXFCE		| \
+	DW1000_SYS_STATUS_RXRFSL 	| \
+	DW1000_SYS_STATUS_RXRFTO 	| \
+	DW1000_SYS_STATUS_LDEERR 	| \
+	DW1000_SYS_STATUS_RXPTO 	| \
+	DW1000_SYS_STATUS_RXSFDTO	)
+
+/* RX sync condition */
+#define DW1000_RX_IN_SYNC(status) 	\
+	(!!((status) & DW1000_SYS_STATUS_HSRBP) != \
+         !!((status) & DW1000_SYS_STATUS_ICRBP))
+
+/* System status register */
+#define DW1000_RX_STATUS_HSRBP(val)		(((val) >> 30) & 0x1)
 
 /* Receive frame information register */
 #define DW1000_RX_FINFO_RXFLEN(val)		(((val) >> 0) & 0x7ff)
@@ -391,6 +436,7 @@ union dw1000_rx_time {
 /* Digital diagnostic registers */
 #define DW1000_EVC_CTRL			0x00
 #define DW1000_EVC_CTRL_EVC_EN			0x0001
+#define DW1000_EVC_CTRL_EVC_CLR			0x0002
 #define DW1000_EVC_OVR			0x0e
 #define DW1000_EVC_OVR_MASK			0x0fff
 
@@ -483,15 +529,20 @@ union dw1000_rx_time {
 #define DW1000_SAR_TEMP_MDEGC(sar, sar_23c) \
 	(23000 + ((100000 * ((sar) - (sar_23c)))) / 114)
 
+/* RX Channel Impulse Power scaling factor */
+#define DW1000_RX_CIR_PWR_SCALE 17
+
 /* Maximum possible link quality indicator value */
 #define DW1000_LQI_MAX 0xff
 
-/* Link quality indicator threshold
+/* Link quality indicator thresholds
  *
  * This is a somewhat arbitrary choice, providing a basic level of
  * protection against inaccurate receive timestamps.
  */
-#define DW1000_LQI_THRESHOLD_DEFAULT 16
+#define DW1000_SNR_THRESHOLD_DEFAULT	16
+#define DW1000_FPR_THRESHOLD_DEFAULT	32
+#define DW1000_NOISE_THRESHOLD_DEFAULT	256
 
 /* Pulse repetition frequencies */
 enum dw1000_prf {
@@ -655,14 +706,21 @@ struct dw1000_tx {
 
 /* Receive descriptor */
 struct dw1000_rx {
+	/* Received Link Quality */
+	uint8_t lqi;
+	/* Data frame validity */
+	bool frame_valid;
+	/* Timestamp validity */
+	bool timestamp_valid;
+
+	/* RX status */
+	__le32 status;
 	/* Frame information */
 	__le32 finfo;
 	/* Timestamp */
 	union dw1000_rx_time time;
 	/* Frame quality */
 	struct dw1000_rx_fqual fqual;
-	/* Overrun detection */
-	uint8_t rxovrr;
 	/* Overrun count */
 	__le16 evc_ovr;
 
@@ -685,6 +743,19 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers rx_buffer;
 	/* Host buffer toggle SPI transfer set */
 	struct dw1000_spi_transfers sys_ctrl;
+
+	/* Recovery SPI message */
+	struct spi_message rcvr;
+	/* Event mask transfer set */
+	struct dw1000_spi_transfers rv_mask0;
+	/* Status clear transfer set */
+	struct dw1000_spi_transfers rv_status;
+	/* Event mask transfer set */
+	struct dw1000_spi_transfers rv_mask1;
+	/* Buffer toggle transfer set */
+	struct dw1000_spi_transfers rv_hrbpt;
+	/* RX Enable transfer set */
+	struct dw1000_spi_transfers rv_rxenab;
 };
 
 /* PTP clock */
@@ -773,8 +844,16 @@ struct dw1000 {
 	enum dw1000_txpsr txpsr;
 	/* Smart power control enabled */
 	bool smart_power;
-	/* Link quality indicator threshold */
-	uint8_t lqi_threshold;
+	/* Signal to Noise Ratio indicator threshold */
+	uint16_t snr_threshold;
+	/* First Path Energy indicator threshold */
+	uint16_t fpr_threshold;
+	/* Link noise indicator threshold */
+	uint16_t noise_threshold;
+	/* Receive overrun state */
+	unsigned int rx_overruns;
+	/* Last seen RX timestamp */
+	uint64_t rx_timestamp[2];
 
 	/* Transmit lock */
 	spinlock_t tx_lock;
@@ -784,8 +863,6 @@ struct dw1000 {
 	struct dw1000_tx tx;
 	/* Receive descriptor */
 	struct dw1000_rx rx;
-	/* Receive overrun count */
-	unsigned int overruns;
 
 	/* PTP clock */
 	struct dw1000_ptp ptp;
