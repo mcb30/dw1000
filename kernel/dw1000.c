@@ -2008,31 +2008,16 @@ static void dw1000_rx_irq(struct dw1000 *dw)
  */
 
 /**
- * dw1000_isr() - Interrupt handler
+ * dw1000_isr_thread() - Interrupt handler thread
  *
  * @irq:		Interrupt number
  * @context:		DW1000 device
  * @return:		IRQ status
  */
-static irqreturn_t dw1000_isr(int irq, void *context)
+static irqreturn_t dw1000_isr_thread(int irq, void *context)
 {
 	struct dw1000 *dw = context;
-
-	/* Disable interrupt and schedule status register handler */
-	disable_irq_nosync(irq);
-	schedule_work(&dw->irq_work);
-	return IRQ_HANDLED;
-}
-
-/**
- * dw1000_irq_worker() - Interrupt status register handler
- *
- * @work:		Worker
- */
-static void dw1000_irq_worker(struct work_struct *work)
-{
-	struct dw1000 *dw = container_of(work, struct dw1000, irq_work);
-	int sys_status;
+	unsigned int sys_status;
 	int rc;
 
 	/* Read interrupt status register */
@@ -2048,8 +2033,9 @@ static void dw1000_irq_worker(struct work_struct *work)
 		dw1000_rx_irq(dw);
 
  abort:
-	enable_irq(dw->spi->irq);
+	return IRQ_HANDLED;
 }
+
 
 /******************************************************************************
  *
@@ -2132,7 +2118,7 @@ static void dw1000_stop(struct ieee802154_hw *hw)
 	}
 
 	/* Complete any pending interrupt work */
-	flush_work(&dw->irq_work);
+	synchronize_irq(dw->spi->irq);
 
 	/* Disable receiver and transmitter */
 	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
@@ -3117,7 +3103,6 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->fpr_threshold = DW1000_FPR_THRESHOLD_DEFAULT;
 	dw->noise_threshold = DW1000_NOISE_THRESHOLD_DEFAULT;
 	spin_lock_init(&dw->tx_lock);
-	INIT_WORK(&dw->irq_work, dw1000_irq_worker);
 	INIT_DELAYED_WORK(&dw->ptp_work, dw1000_ptp_worker);
 	hw->parent = &spi->dev;
 
@@ -3155,8 +3140,10 @@ static int dw1000_probe(struct spi_device *spi)
 	}
 
 	/* Hook interrupt */
-	if ((rc = devm_request_irq(dw->dev, spi->irq, dw1000_isr, 0,
-				   dev_name(dw->dev), dw)) != 0) {
+	if ((rc = devm_request_threaded_irq(dw->dev, spi->irq, NULL,
+					    dw1000_isr_thread,
+					    IRQF_NO_SUSPEND | IRQF_ONESHOT,
+					    dev_name(dw->dev), dw)) != 0) {
 		dev_err(dw->dev, "could not request IRQ %d: %d\n",
 			spi->irq, rc);
 		goto err_request_irq;
