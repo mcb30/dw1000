@@ -538,11 +538,12 @@ union dw1000_rx_time {
 
 /* Link quality indicator thresholds
  *
- * This is a somewhat arbitrary choice, providing a basic level of
- * protection against inaccurate receive timestamps.
+ * The default values DO NOT put any real limitations on the
+ * timestamp reception. These thresholds should be changed
+ * to more meaningful values via sysfs, case by case basis.
  */
-#define DW1000_SNR_THRESHOLD_DEFAULT	16
-#define DW1000_FPR_THRESHOLD_DEFAULT	32
+#define DW1000_SNR_THRESHOLD_DEFAULT	1
+#define DW1000_FPR_THRESHOLD_DEFAULT	1
 #define DW1000_NOISE_THRESHOLD_DEFAULT	256
 
 /* Timestamp repetition threshold
