@@ -542,7 +542,7 @@ union dw1000_rx_time {
  * protection against inaccurate receive timestamps.
  */
 #define DW1000_SNR_THRESHOLD_DEFAULT	16
-#define DW1000_FPR_THRESHOLD_DEFAULT	64
+#define DW1000_FPR_THRESHOLD_DEFAULT	32
 #define DW1000_NOISE_THRESHOLD_DEFAULT	256
 
 /* Timestamp repetition threshold
@@ -558,7 +558,7 @@ union dw1000_rx_time {
  * this fraction of the expected number of preamble symbols are
  * accumulated.
  */
-#define DW1000_RXPACC_THRESHOLD 4
+#define DW1000_RXPACC_THRESHOLD 8
 
 /* Pulse repetition frequencies */
 enum dw1000_prf {
