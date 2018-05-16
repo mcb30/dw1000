@@ -812,8 +812,6 @@ struct dw1000 {
 
 	/* Transmit lock */
 	spinlock_t tx_lock;
-	/* Interrupt status worker */
-	struct work_struct irq_work;
 	/* Transmit descriptor */
 	struct dw1000_tx tx;
 	/* Receive descriptor */
