@@ -415,7 +415,7 @@ union dw1000_rx_time {
 #define DW1000_FS_PLLTUNE		0x0b
 #define DW1000_FS_XTALT			0x0e
 #define DW1000_FS_XTALT_XTALT(n)		((n) << 0)
-#define DW1000_FS_XTALT_XTALT_MIDPOINT		DW1000_FS_XTALT_XTALT(0x10)
+#define DW1000_FS_XTALT_XTALT_MIDPOINT		DW1000_FS_XTALT_XTALT(0x0f)
 #define DW1000_FS_XTALT_XTALT_MASK		DW1000_FS_XTALT_XTALT(0x1f)
 
 /* One-time programmable memory interface registers */
@@ -473,6 +473,8 @@ union dw1000_rx_time {
 #define DW1000_OTP_DELAYS		0x01c
 #define DW1000_OTP_DELAYS_16M(val)		(((val) >> 0) & 0xffff)
 #define DW1000_OTP_DELAYS_64M(val)		(((val) >> 16) & 0xffff)
+#define DW1000_OTP_REV_XTALT		0x01e
+#define DW1000_OTP_XTALT(val)			(((val) >> 0) & 0x1f)
 
 /* Time required for OTP read to complete */
 #define DW1000_OTP_WAIT_MIN_US 150
@@ -842,6 +844,8 @@ struct dw1000 {
 	/* One-time programmable memory */
 	struct regmap *otp;
 
+	/* XTAL Trim */
+	uint8_t xtalt;
 	/* Antenna delays */
 	uint16_t antd[DW1000_PRF_COUNT];
 	/* Calibrated voltage measurement at 3.3V */

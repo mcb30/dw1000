@@ -82,6 +82,7 @@
 				spi-max-frequency = <20000000>;
 				decawave,eui64 = /bits/ 64 <EUI64>;
 				decawave,antd = /bits/ 16 <0x0 0x4024 0x4026>;
+				decawave,xtalt = <0x0f>;
 			};
 		};
 	};

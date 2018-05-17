@@ -776,6 +776,7 @@ enum dw1000_configuration_change {
 	DW1000_CONFIGURE_RATE		= BIT(4),
 	DW1000_CONFIGURE_TXPSR		= BIT(5),
 	DW1000_CONFIGURE_SMART_POWER	= BIT(6),
+	DW1000_CONFIGURE_XTAL_TRIM	= BIT(7),
 };
 
 /**
@@ -833,6 +834,7 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	uint16_t lde_rxantd;
 	unsigned int channel;
 	unsigned int pcode;
+	unsigned int xtalt;
 	enum dw1000_prf prf;
 	enum dw1000_rate rate;
 	enum dw1000_txpsr txpsr;
@@ -843,6 +845,7 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	int rc;
 
 	/* Look up current configurations */
+	xtalt = dw->xtalt;
 	channel = dw->channel;
 	pcode = dw1000_pcode(dw);
 	prf = dw->prf;
@@ -1010,6 +1013,12 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 				       channel_cfg->fs_plltune)) != 0)
 			return rc;
 	}
+	if (changed & DW1000_CONFIGURE_XTAL_TRIM) {
+		if ((rc = regmap_update_bits(dw->fs_ctrl.regs, DW1000_FS_XTALT,
+					     DW1000_FS_XTALT_XTALT_MASK,
+					     xtalt)) != 0)
+			return rc;
+	}
 
 	/* LDE_IF registers */
 	if (changed & DW1000_CONFIGURE_PRF) {
@@ -1033,6 +1042,32 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 			return rc;
 	}
 
+	return 0;
+}
+
+/**
+ * dw1000_configure_xtalt() - Configure XTAL trim
+ *
+ * @dw:			DW1000 device
+ * @trim:		Trim value
+ * @return:		0 on success or -errno
+ */
+static int dw1000_configure_xtalt(struct dw1000 *dw, unsigned int trim)
+{
+	int rc;
+
+	/* Check that trim value is supported */
+	if (trim & ~DW1000_FS_XTALT_XTALT_MASK)
+		return -EINVAL;
+
+	/* Assign new trim value */
+	dw->xtalt = trim;
+
+	/* Reconfigure channel */
+	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_XTAL_TRIM)) != 0)
+		return rc;
+
+	dev_dbg(dw->dev, "set xtal trim %d\n", trim);
 	return 0;
 }
 
@@ -2435,6 +2470,30 @@ static const struct hwmon_chip_info dw1000_hwmon_chip = {
 #define DW1000_ATTR_RO(_name, _mode) \
 	DEVICE_ATTR(_name, _mode, dw1000_show_##_name, NULL)
 
+/* XTAL trim */
+static ssize_t dw1000_show_xtalt(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "%d\n", dw->xtalt);
+}
+static ssize_t dw1000_store_xtalt(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	unsigned int trim;
+	int rc;
+
+	if ((rc = kstrtouint(buf, 0, &trim)) != 0)
+		return rc;
+	if ((rc = dw1000_configure_xtalt(dw, trim)) != 0)
+		return rc;
+	return count;
+}
+static DW1000_ATTR_RW(xtalt, 0644);
+
 /* Channel */
 static ssize_t dw1000_show_channel(struct device *dev,
 				  struct device_attribute *attr, char *buf)
@@ -2645,6 +2704,7 @@ static DW1000_ATTR_RW(noise_threshold, 0644);
 
 /* Attribute list */
 static struct attribute *dw1000_attrs[] = {
+	&dev_attr_xtalt.attr,
 	&dev_attr_channel.attr,
 	&dev_attr_pcode.attr,
 	&dev_attr_prf.attr,
@@ -2745,6 +2805,44 @@ static int dw1000_reset(struct dw1000 *dw)
 	if ((rc = dw1000_check_dev_id(dw)) != 0)
 		return rc;
 
+	return 0;
+}
+
+/**
+ * dw1000_load_xtalt() - Load XTALT calibration value
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_load_xtalt(struct dw1000 *dw)
+{
+	uint32_t value;
+	uint8_t xtalt;
+	int rc;
+
+	/* Default value for XTALT */
+	xtalt = DW1000_FS_XTALT_XTALT_MIDPOINT;
+
+	/* Read XTAL_Trim calibration value from OTP */
+	if ((rc = regmap_read(dw->otp, DW1000_OTP_REV_XTALT, &value)) != 0)
+		return rc;
+	if (DW1000_OTP_XTALT(value) != 0 && DW1000_OTP_XTALT(value) != 0x1f)
+		xtalt = DW1000_OTP_XTALT(value);
+
+	/* Read XTALT calibration value from devicetree */
+	if (of_property_read_u32(dw->dev->of_node, "decawave,xtalt",
+				 &value) == 0) {
+		/* Check the value range */
+		if ((value & ~DW1000_FS_XTALT_XTALT_MASK) == 0)
+			xtalt = value;
+		else
+			dev_err(dw->dev, "invalid decawave,xtalt "
+				"value 0x%02x\n", value);
+	}
+
+	dw->xtalt = xtalt;
+
+	dev_dbg(dw->dev, "set xtal trim 0x%02x\n", xtalt);
 	return 0;
 }
 
@@ -2979,13 +3077,6 @@ static int dw1000_init(struct dw1000 *dw)
 	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, mask, value)) != 0)
 		return rc;
 
-	/* Configure crystal trim to midpoint */
-	mask = DW1000_FS_XTALT_XTALT_MASK;
-	value = DW1000_FS_XTALT_XTALT_MIDPOINT;
-	if ((rc = regmap_update_bits(dw->fs_ctrl.regs, DW1000_FS_XTALT,
-				     mask, value)) != 0)
-		return rc;
-
 	/* Handle short inter-frame gaps in hardware */
 	value = DW1000_TX_FCTRL4_IFSDELAY(IEEE802154_SIFS_PERIOD);
 	if ((rc = regmap_write(dw->tx_fctrl.regs, DW1000_TX_FCTRL4,
@@ -3031,6 +3122,10 @@ static int dw1000_init(struct dw1000 *dw)
 	value = DW1000_EVC_CTRL_EVC_EN;
 	if ((rc = regmap_update_bits(dw->dig_diag.regs, DW1000_EVC_CTRL,
 				     mask, value)) != 0)
+		return rc;
+
+	/* Load XTALT calibration value */
+	if ((rc = dw1000_load_xtalt(dw)) != 0)
 		return rc;
 
 	/* Load LDOTUNE calibration value */
@@ -3108,6 +3203,7 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->dev = &spi->dev;
 	dw->hw = hw;
 	dw->phy = hw->phy;
+	dw->xtalt = DW1000_FS_XTALT_XTALT_MIDPOINT;
 	dw->channel = DW1000_CHANNEL_DEFAULT;
 	dw->pcode = 0;
 	dw->prf = DW1000_PRF_64M;
