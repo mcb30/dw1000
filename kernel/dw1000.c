@@ -2624,7 +2624,21 @@ static ssize_t dw1000_show_channel(struct device *dev,
 
 	return sprintf(buf, "%d\n", dw->channel);
 }
-static DW1000_ATTR_RO(channel, 0444);
+static ssize_t dw1000_store_channel(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	int channel;
+	int rc;
+
+	if ((rc = kstrtoint(buf, 0, &channel)) != 0)
+		return rc;
+	if ((rc = dw1000_configure_channel(dw, channel)) != 0)
+		return rc;
+	return count;
+}
+static DW1000_ATTR_RW(channel, 0644);
 
 /* Preamble code */
 static ssize_t dw1000_show_pcode(struct device *dev,
