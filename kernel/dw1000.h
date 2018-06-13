@@ -431,6 +431,9 @@ union dw1000_rx_time {
 #define DW1000_LDE_CFG2			0x1806
 #define DW1000_LDE_REPC			0x2804
 
+/* Antenna delay mask */
+#define DW1000_ANTD_MASK			0xffff
+
 /* Digital diagnostic registers */
 #define DW1000_EVC_CTRL			0x00
 #define DW1000_EVC_CTRL_EVC_EN			0x0001
@@ -844,17 +847,17 @@ struct dw1000 {
 	/* One-time programmable memory */
 	struct regmap *otp;
 
-	/* XTAL Trim */
-	uint8_t xtalt;
-	/* Antenna delays */
-	uint16_t antd[DW1000_PRF_COUNT];
 	/* Calibrated voltage measurement at 3.3V */
 	uint8_t vmeas_3v3;
 	/* Calibrated temperature measurement at 23 degC */
 	uint8_t tmeas_23c;
 
+	/* XTAL Trim */
+	uint8_t xtalt;
 	/* Channel number */
 	unsigned int channel;
+	/* Antenna delays */
+	uint16_t antd[DW1000_PRF_COUNT];
 	/* Preamble code */
 	unsigned int pcode;
 	/* Pulse repetition frequency */
