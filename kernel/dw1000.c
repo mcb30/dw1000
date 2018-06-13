@@ -788,12 +788,13 @@ enum dw1000_configuration_change {
  */
 static unsigned int dw1000_pcode(struct dw1000 *dw)
 {
+	unsigned int pcode = dw->pcode[dw->prf];
 	unsigned long pcodes;
 
-	/* Use explicitly set preamble code if configured and pcodes */
+	/* Use explicitly set preamble code if configured */
 	pcodes = dw1000_channel_configs[dw->channel].pcodes[dw->prf];
-	if (BIT(dw->pcode) & pcodes)
-		return dw->pcode;
+	if (BIT(pcode) & pcodes)
+		return pcode;
 
 	/* Otherwise, use highest supported preamble code */
 	return (fls(pcodes) - 1);
@@ -848,9 +849,9 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	/* Look up current configurations */
 	xtalt = dw->xtalt;
 	channel = dw->channel;
-	pcode = dw1000_pcode(dw);
 	prf = dw->prf;
 	rate = dw->rate;
+	pcode = dw1000_pcode(dw);
 	txpsr = dw1000_txpsr(dw);
 	smart_power = dw->smart_power;
 	channel_cfg = &dw1000_channel_configs[channel];
@@ -1120,14 +1121,13 @@ static int dw1000_configure_pcode(struct dw1000 *dw, unsigned int pcode)
 	}
 
 	/* Record preamble code */
-	dw->pcode = pcode;
+	dw->pcode[dw->prf] = pcode;
 
 	/* Reconfigure preamble code */
 	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_PCODE)) != 0)
 		return rc;
 
-	dev_dbg(dw->dev, "set preamble code %d (requested %d)\n",
-		dw1000_pcode(dw), pcode);
+	dev_dbg(dw->dev, "set preamble code %d\n", pcode);
 	return 0;
 }
 
@@ -3272,7 +3272,6 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->phy = hw->phy;
 	dw->xtalt = DW1000_FS_XTALT_XTALT_MIDPOINT;
 	dw->channel = DW1000_CHANNEL_DEFAULT;
-	dw->pcode = 0;
 	dw->prf = DW1000_PRF_64M;
 	dw->rate = DW1000_RATE_6800K;
 	dw->txpsr = DW1000_TXPSR_DEFAULT;
