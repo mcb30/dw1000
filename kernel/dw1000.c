@@ -773,10 +773,11 @@ enum dw1000_configuration_change {
 	DW1000_CONFIGURE_CHANNEL	= BIT(1),
 	DW1000_CONFIGURE_PCODE		= BIT(2),
 	DW1000_CONFIGURE_PRF		= BIT(3),
-	DW1000_CONFIGURE_RATE		= BIT(4),
-	DW1000_CONFIGURE_TXPSR		= BIT(5),
-	DW1000_CONFIGURE_SMART_POWER	= BIT(6),
+	DW1000_CONFIGURE_ANTD		= BIT(4),
+	DW1000_CONFIGURE_RATE		= BIT(5),
+	DW1000_CONFIGURE_TXPSR		= BIT(6),
 	DW1000_CONFIGURE_XTAL_TRIM	= BIT(7),
+	DW1000_CONFIGURE_SMART_POWER	= BIT(8),
 };
 
 /**
@@ -901,7 +902,7 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	}
 
 	/* TX_ANTD register */
-	if (changed & DW1000_CONFIGURE_PRF) {
+	if (changed & (DW1000_CONFIGURE_PRF | DW1000_CONFIGURE_ANTD)) {
 		if ((rc = regmap_write(dw->tx_antd.regs, 0,
 				       dw->antd[prf])) != 0)
 			return rc;
@@ -1021,12 +1022,14 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	}
 
 	/* LDE_IF registers */
-	if (changed & DW1000_CONFIGURE_PRF) {
+	if (changed & (DW1000_CONFIGURE_PRF | DW1000_CONFIGURE_ANTD)) {
 		lde_rxantd = cpu_to_le16(dw->antd[prf]);
 		if ((rc = regmap_raw_write(dw->lde_if.regs, DW1000_LDE_RXANTD,
 					   &lde_rxantd,
 					   sizeof(lde_rxantd))) != 0)
 			return rc;
+	}
+	if (changed & DW1000_CONFIGURE_PRF) {
 		if ((rc = regmap_raw_write(dw->lde_if.regs, DW1000_LDE_CFG2,
 					   prf_cfg->lde_cfg2,
 					   sizeof(prf_cfg->lde_cfg2))) != 0)
@@ -1148,6 +1151,32 @@ static int dw1000_configure_prf(struct dw1000 *dw, enum dw1000_prf prf)
 
 	dev_dbg(dw->dev, "set pulse repetition frequency %dMHz\n",
 		dw1000_prfs[dw->prf]);
+	return 0;
+}
+
+/**
+ * dw1000_configure_antd() - Configure antenna delay
+ *
+ * @dw:			DW1000 device
+ * @antd:		Antenna delay
+ * @return:		0 on success or -errno
+ */
+static int dw1000_configure_antd(struct dw1000 *dw, unsigned int delay)
+{
+	int rc;
+
+	/* Check value range */
+	if (delay & ~DW1000_ANTD_MASK)
+		return -EINVAL;
+
+	/* Record new delay */
+	dw->antd[dw->prf] = delay;
+
+	/* Reconfigure antenna delay */
+	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_ANTD)) != 0)
+		return rc;
+
+	dev_dbg(dw->dev, "set antenna delay 0x%4x\n", delay);
 	return 0;
 }
 
@@ -2555,6 +2584,30 @@ static ssize_t dw1000_store_prf(struct device *dev,
 }
 static DW1000_ATTR_RW(prf, 0644);
 
+/* Antenna delay */
+static ssize_t dw1000_show_antd(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "0x%4x\n", dw->antd[dw->prf]);
+}
+static ssize_t dw1000_store_antd(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	unsigned int delay;
+	int rc;
+
+	if ((rc = kstrtouint(buf, 0, &delay)) != 0)
+		return rc;
+	if ((rc = dw1000_configure_antd(dw, delay)) != 0)
+		return rc;
+	return count;
+}
+static DW1000_ATTR_RW(antd, 0644);
+
 /* Data rate */
 static ssize_t dw1000_show_rate(struct device *dev,
 				struct device_attribute *attr, char *buf)
@@ -2708,6 +2761,7 @@ static struct attribute *dw1000_attrs[] = {
 	&dev_attr_channel.attr,
 	&dev_attr_pcode.attr,
 	&dev_attr_prf.attr,
+	&dev_attr_antd.attr,
 	&dev_attr_rate.attr,
 	&dev_attr_txpsr.attr,
 	&dev_attr_smart_power.attr,
@@ -2946,19 +3000,32 @@ static int dw1000_load_eui64(struct dw1000 *dw)
  */
 static int dw1000_load_delays(struct dw1000 *dw)
 {
-	int delays;
+	uint32_t array[2];
+	uint32_t delays;
 	int rc;
 
 	/* Read delays from OTP */
 	if ((rc = regmap_read(dw->otp, DW1000_OTP_DELAYS, &delays)) != 0)
 		return rc;
-	dw->antd[DW1000_PRF_16M] = DW1000_OTP_DELAYS_16M(delays);
-	dw->antd[DW1000_PRF_64M] = DW1000_OTP_DELAYS_64M(delays);
+	if (delays != 0 && delays != 0xfffffffful) {
+		dw->antd[DW1000_PRF_16M] = DW1000_OTP_DELAYS_16M(delays);
+		dw->antd[DW1000_PRF_64M] = DW1000_OTP_DELAYS_64M(delays);
+	}
 
 	/* Read delays from devicetree */
-	of_property_read_u16_array(dw->dev->of_node, "decawave,antd",
-				   dw->antd, ARRAY_SIZE(dw->antd));
+	if (of_property_read_u32_array(dw->dev->of_node, "decawave,antd",
+				       array, ARRAY_SIZE(array)) == 0) {
+		if ((array[0] & ~DW1000_ANTD_MASK) || (array[1] & ~DW1000_ANTD_MASK)) {
+			dev_err(dw->dev, "invalid decawave,antd values <0x%04x,0x%04x>\n",
+				array[0], array[1]);
+			return 0;
+		}
+		dw->antd[DW1000_PRF_16M] = array[0];
+		dw->antd[DW1000_PRF_64M] = array[1];
+	}
 
+	dev_dbg(dw->dev, "set antenna delays 0x%04x,0x%04x\n",
+		dw->antd[DW1000_PRF_16M], dw->antd[DW1000_PRF_64M]);
 	return 0;
 }
 
