@@ -858,8 +858,8 @@ struct dw1000 {
 	unsigned int channel;
 	/* Antenna delays */
 	uint16_t antd[DW1000_PRF_COUNT];
-	/* Preamble code */
-	unsigned int pcode;
+	/* Preamble codes */
+	unsigned int pcode[DW1000_PRF_COUNT];
 	/* Pulse repetition frequency */
 	enum dw1000_prf prf;
 	/* Data rate */
