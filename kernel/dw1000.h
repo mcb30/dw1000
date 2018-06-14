@@ -415,7 +415,7 @@ union dw1000_rx_time {
 #define DW1000_FS_PLLTUNE		0x0b
 #define DW1000_FS_XTALT			0x0e
 #define DW1000_FS_XTALT_XTALT(n)		((n) << 0)
-#define DW1000_FS_XTALT_XTALT_MIDPOINT		DW1000_FS_XTALT_XTALT(0x10)
+#define DW1000_FS_XTALT_XTALT_MIDPOINT		DW1000_FS_XTALT_XTALT(0x0f)
 #define DW1000_FS_XTALT_XTALT_MASK		DW1000_FS_XTALT_XTALT(0x1f)
 
 /* One-time programmable memory interface registers */
@@ -430,6 +430,9 @@ union dw1000_rx_time {
 #define DW1000_LDE_RXANTD		0x1804
 #define DW1000_LDE_CFG2			0x1806
 #define DW1000_LDE_REPC			0x2804
+
+/* Antenna delay mask */
+#define DW1000_ANTD_MASK			0xffff
 
 /* Digital diagnostic registers */
 #define DW1000_EVC_CTRL			0x00
@@ -473,6 +476,8 @@ union dw1000_rx_time {
 #define DW1000_OTP_DELAYS		0x01c
 #define DW1000_OTP_DELAYS_16M(val)		(((val) >> 0) & 0xffff)
 #define DW1000_OTP_DELAYS_64M(val)		(((val) >> 16) & 0xffff)
+#define DW1000_OTP_REV_XTALT		0x01e
+#define DW1000_OTP_XTALT(val)			(((val) >> 0) & 0x1f)
 
 /* Time required for OTP read to complete */
 #define DW1000_OTP_WAIT_MIN_US 150
@@ -538,11 +543,12 @@ union dw1000_rx_time {
 
 /* Link quality indicator thresholds
  *
- * This is a somewhat arbitrary choice, providing a basic level of
- * protection against inaccurate receive timestamps.
+ * The default values DO NOT put any real limitations on the
+ * timestamp reception. These thresholds should be changed
+ * to more meaningful values via sysfs, case by case basis.
  */
-#define DW1000_SNR_THRESHOLD_DEFAULT	16
-#define DW1000_FPR_THRESHOLD_DEFAULT	32
+#define DW1000_SNR_THRESHOLD_DEFAULT	1
+#define DW1000_FPR_THRESHOLD_DEFAULT	1
 #define DW1000_NOISE_THRESHOLD_DEFAULT	256
 
 /* Timestamp repetition threshold
@@ -841,17 +847,19 @@ struct dw1000 {
 	/* One-time programmable memory */
 	struct regmap *otp;
 
-	/* Antenna delays */
-	uint16_t antd[DW1000_PRF_COUNT];
 	/* Calibrated voltage measurement at 3.3V */
 	uint8_t vmeas_3v3;
 	/* Calibrated temperature measurement at 23 degC */
 	uint8_t tmeas_23c;
 
+	/* XTAL Trim */
+	uint8_t xtalt;
 	/* Channel number */
 	unsigned int channel;
-	/* Preamble code */
-	unsigned int pcode;
+	/* Antenna delays */
+	uint16_t antd[DW1000_PRF_COUNT];
+	/* Preamble codes */
+	unsigned int pcode[DW1000_PRF_COUNT];
 	/* Pulse repetition frequency */
 	enum dw1000_prf prf;
 	/* Data rate */
