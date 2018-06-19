@@ -268,7 +268,6 @@ NoConn ~ 6000 2550
 NoConn ~ 6000 2450
 NoConn ~ 7800 2650
 NoConn ~ 7800 2750
-NoConn ~ 7800 2850
 NoConn ~ 7800 2950
 NoConn ~ 7800 3050
 NoConn ~ 7800 3150
@@ -460,12 +459,10 @@ $EndComp
 NoConn ~ 6800 2050
 NoConn ~ 7800 3250
 NoConn ~ 7800 3350
-NoConn ~ 7800 3450
 NoConn ~ 3450 4250
 NoConn ~ 3450 4150
 NoConn ~ 3450 3950
 NoConn ~ 3450 4050
-NoConn ~ 1450 3650
 NoConn ~ 1450 3450
 NoConn ~ 1450 3250
 $Comp
@@ -752,4 +749,50 @@ Wire Wire Line
 Connection ~ 9750 2100
 Wire Wire Line
 	5650 5950 5650 7350
+Wire Wire Line
+	8100 5300 1100 5300
+Wire Wire Line
+	1100 5300 1100 3650
+Wire Wire Line
+	1100 3650 1450 3650
+Wire Wire Line
+	7800 3450 8100 3450
+Wire Wire Line
+	8100 3450 8100 5300
+NoConn ~ 7800 2850
+Text Label 1200 3650 0    60   ~ 0
+RSTn
+$Comp
+L Fiducial FID1
+U 1 1 5B2937CA
+P 10000 800
+F 0 "FID1" H 10000 650 60  0000 C CNN
+F 1 "Fiducial" H 10000 950 60  0000 C CNN
+F 2 "Fiducials:Fiducial_1mm_Dia_2.54mm_Outer_CopperTop" H 10000 800 60  0001 C CNN
+F 3 "" H 10000 800 60  0001 C CNN
+	1    10000 800 
+	1    0    0    -1  
+$EndComp
+$Comp
+L Fiducial FID2
+U 1 1 5B29383B
+P 10400 800
+F 0 "FID2" H 10400 650 60  0000 C CNN
+F 1 "Fiducial" H 10400 950 60  0000 C CNN
+F 2 "Fiducials:Fiducial_1mm_Dia_2.54mm_Outer_CopperTop" H 10400 800 60  0001 C CNN
+F 3 "" H 10400 800 60  0001 C CNN
+	1    10400 800 
+	1    0    0    -1  
+$EndComp
+$Comp
+L Fiducial FID3
+U 1 1 5B293896
+P 10800 800
+F 0 "FID3" H 10800 650 60  0000 C CNN
+F 1 "Fiducial" H 10800 950 60  0000 C CNN
+F 2 "Fiducials:Fiducial_1mm_Dia_2.54mm_Outer_CopperTop" H 10800 800 60  0001 C CNN
+F 3 "" H 10800 800 60  0001 C CNN
+	1    10800 800 
+	1    0    0    -1  
+$EndComp
 $EndSCHEMATC
