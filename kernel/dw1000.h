@@ -511,12 +511,14 @@ union dw1000_rx_time {
 /* Maximum multiplier adjustment
  *
  * This represents the maximum change that can be made to the cycle
- * counter multiplier without exceeding the 32-bit range, expressed as
- * parts per billion of the original multiplier value.  Some margin is
- * provided to allow for the various conversion factors used in
- * calculations.
+ * counter multiplier without exceeding the 32-bit range, expressed
+ * as parts per million (<<16) of the original multiplier value.
+ * Some margin is provided to allow for the various conversion
+ * factors used in calculations.
+ *
+ * This allows adjusting the frequency by +/- 32767ppm
  */
-#define DW1000_PTP_MAX_ADJ 990000000L
+#define DW1000_PTP_MAX_ADJ 2147483646ULL
 
 /* Cycle counter wraparound check interval: well within 17.2074 seconds */
 #define DW1000_PTP_WORK_DELAY (3 * HZ)

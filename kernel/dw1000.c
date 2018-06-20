@@ -1331,7 +1331,8 @@ static int dw1000_ptp_adjfine(struct ptp_clock_info *ptp, long delta)
 
 	/* Calculate multiplier value */
 	mult = (delta < 0) ? -delta : delta;
-	mult *= DW1000_CYCLECOUNTER_MULT / 65536000000ULL;
+	/* mult *= DW1000_CYCLECOUNTER_MULT / 65536000000ULL; */
+	mult = (mult * (DW1000_CYCLECOUNTER_MULT / 128000000ULL)) >> 9;
 	mult = (delta < 0) ? DW1000_CYCLECOUNTER_MULT - mult:
 			     DW1000_CYCLECOUNTER_MULT + mult;
 
