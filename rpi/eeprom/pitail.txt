@@ -38,3 +38,8 @@ setgpio		11	ALT0	DEFAULT
 # IRQ
 #
 setgpio		25	INPUT	DOWN
+
+# RESET
+#
+setgpio		24	INPUT	NONE
+
