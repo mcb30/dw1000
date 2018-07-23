@@ -802,6 +802,8 @@ struct dw1000 {
 	struct ieee802154_hw *hw;
 	/* WPAN PHY */
 	struct wpan_phy *phy;
+	/* Reset GPIO */
+	int reset_gpio;
 
 	/* Register maps */
 	struct dw1000_regmap dev_id;

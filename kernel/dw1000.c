@@ -23,6 +23,8 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/spi/spi.h>
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
 #include <linux/regmap.h>
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
@@ -2824,6 +2826,12 @@ static int dw1000_reset(struct dw1000 *dw)
 {
 	int rc;
 
+	/* Release RESET GPIO */
+	gpio_set_value(dw->reset_gpio, 1);
+
+	/* Wait for the device to initialise */
+	msleep(10);
+
 	/* Force slow SPI clock speed */
 	dw->spi->max_speed_hz = DW1000_SPI_SLOW_HZ;
 
@@ -3283,6 +3291,19 @@ static int dw1000_probe(struct spi_device *spi)
 	INIT_DELAYED_WORK(&dw->ptp_work, dw1000_ptp_worker);
 	hw->parent = &spi->dev;
 
+	/* Reset GPIO Pin */
+	dw->reset_gpio = of_get_named_gpio(dw->dev->of_node, "reset-gpio", 0);
+	if (!gpio_is_valid(dw->reset_gpio)) {
+		rc = -EIO;
+		goto err_get_gpio;
+	}
+
+	/* Initialise reset GPIO pin as output */
+	if ((rc = gpio_request_one(dw->reset_gpio, GPIOF_DIR_OUT |
+				   GPIOF_OPEN_DRAIN | GPIOF_INIT_LOW,
+				   "dw1000-reset")) < 0)
+		goto err_req_gpio;
+
 	/* Report capabilities */
 	hw->flags = (IEEE802154_HW_TX_OMIT_CKSUM |
 		     IEEE802154_HW_AFILT |
@@ -3369,6 +3390,9 @@ static int dw1000_probe(struct spi_device *spi)
  err_reset:
  err_otp_regmap_init:
  err_regmap_init:
+	gpio_free(dw->reset_gpio);
+ err_req_gpio:
+ err_get_gpio:
 	ieee802154_free_hw(hw);
  err_alloc_hw:
 	return rc;
@@ -3391,6 +3415,7 @@ static int dw1000_remove(struct spi_device *spi)
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
 	dw1000_reset(dw);
 	ieee802154_free_hw(hw);
+	gpio_free(dw->reset_gpio);
 	return 0;
 }
 
