@@ -133,6 +133,22 @@ union dw1000_rx_time {
 	} __packed;
 };
 
+/* Receive time tracking interval */
+union dw1000_rx_ttcki {
+	/* Tracking interval */
+	__le32 tcki;
+	/* Raw bytes */
+	uint8_t raw[4];
+};
+
+/* Receive time tracking offset */
+union dw1000_rx_ttcko {
+	/* Tracking offset */
+	__le32 tofs;
+	/* Raw bytes */
+	uint8_t raw[3];
+};
+
 /* Register files */
 #define DW1000_DEV_ID		0x00
 #define DW1000_DEV_ID_LEN	4
@@ -709,6 +725,10 @@ struct dw1000_tsinfo {
 	uint32_t cir_pwr;
 	/* First Patch Impulse Power */
 	uint32_t fp_pwr;
+	/* Time tracking offset */
+	uint32_t ttcko;
+	/* Time tracking interval */
+	uint32_t ttcki;
 };
 
 /* Transmit descriptor */
@@ -777,6 +797,9 @@ struct dw1000_rx {
 	struct dw1000_tsinfo tsinfo;
 	/* Frame quality */
 	struct dw1000_rx_fqual fqual;
+	/* Time tracking */
+	union dw1000_rx_ttcko ttcko;
+	union dw1000_rx_ttcki ttcki;
 	/* Overrun count */
 	__le16 evc_ovr;
 
@@ -788,6 +811,9 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers rx_time;
 	/* Frame quality transfer set */
 	struct dw1000_spi_transfers rx_fqual;
+	/* Frame time tracking transfer set */
+	struct dw1000_spi_transfers rx_ttcko;
+	struct dw1000_spi_transfers rx_ttcki;
 	/* System status transfer set */
 	struct dw1000_spi_transfers sys_status;
 	/* Digital diagnostics transfer set */
