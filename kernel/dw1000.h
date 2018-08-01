@@ -922,6 +922,8 @@ struct dw1000 {
 	uint16_t antd[DW1000_PRF_COUNT];
 	/* Preamble codes */
 	unsigned int pcode[DW1000_PRF_COUNT];
+	/* Transmit power */
+	uint8_t txpwr[4];
 	/* Pulse repetition frequency */
 	enum dw1000_prf prf;
 	/* Data rate */

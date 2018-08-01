@@ -779,7 +779,8 @@ enum dw1000_configuration_change {
 	DW1000_CONFIGURE_RATE		= BIT(5),
 	DW1000_CONFIGURE_TXPSR		= BIT(6),
 	DW1000_CONFIGURE_XTAL_TRIM	= BIT(7),
-	DW1000_CONFIGURE_SMART_POWER	= BIT(8),
+	DW1000_CONFIGURE_TX_POWER	= BIT(8),
+	DW1000_CONFIGURE_SMART_POWER	= BIT(9),
 };
 
 /**
@@ -833,7 +834,6 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	const struct dw1000_rate_config *rate_cfg;
 	const struct dw1000_txpsr_config *txpsr_cfg;
 	const struct dw1000_fixed_config *fixed_cfg;
-	uint8_t tx_power[sizeof(channel_cfg->tx_power[0])];
 	uint16_t lde_repc;
 	uint16_t lde_rxantd;
 	unsigned int channel;
@@ -843,7 +843,6 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	enum dw1000_rate rate;
 	enum dw1000_txpsr txpsr;
 	bool smart_power;
-	unsigned int i;
 	int mask;
 	int value;
 	int rc;
@@ -914,13 +913,17 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	/* TX_POWER register */
 	if (changed & (DW1000_CONFIGURE_CHANNEL | DW1000_CONFIGURE_PRF |
 		       DW1000_CONFIGURE_SMART_POWER)) {
-		memcpy(tx_power, &channel_cfg->tx_power[prf], sizeof(tx_power));
-		if (!smart_power) {
-			for (i = 1; i < sizeof(tx_power); i++)
-				tx_power[i] = tx_power[0];
+		if (smart_power) {
+			memcpy(dw->txpwr, channel_cfg->tx_power[prf], sizeof(dw->txpwr));
+		} else {
+			dw->txpwr[0] = dw->txpwr[3] = 0;
+			dw->txpwr[1] = dw->txpwr[2] = channel_cfg->tx_power[prf][0];
 		}
-		if ((rc = regmap_raw_write(dw->tx_power.regs, 0, tx_power,
-					   sizeof(tx_power))) != 0)
+	}
+	if (changed & (DW1000_CONFIGURE_CHANNEL | DW1000_CONFIGURE_PRF |
+		       DW1000_CONFIGURE_TX_POWER | DW1000_CONFIGURE_SMART_POWER)) {
+		if ((rc = regmap_raw_write(dw->tx_power.regs, 0, dw->txpwr,
+					   sizeof(dw->txpwr))) != 0)
 			return rc;
 	}
 
@@ -1224,6 +1227,31 @@ static int dw1000_configure_txpsr(struct dw1000 *dw, enum dw1000_txpsr txpsr)
 
 	dev_dbg(dw->dev, "set %d preamble symbol repetitions\n",
 		dw1000_txpsrs[dw1000_txpsr(dw)]);
+	return 0;
+}
+
+/**
+ * dw1000_configure_tx_power() - Configure tx power control
+ *
+ * @dw:			DW1000 device
+ * @power:		Tx power level
+ * @return:		0 on success or -errno
+ */
+static int dw1000_configure_tx_power(struct dw1000 *dw, uint32_t power)
+{
+	int rc;
+
+	/* Record power level */
+	dw->txpwr[0] = (power >>  0) & 0xff;
+	dw->txpwr[1] = (power >>  8) & 0xff;
+	dw->txpwr[2] = (power >> 16) & 0xff;
+	dw->txpwr[3] = (power >> 24) & 0xff;
+
+	/* Reconfigure transmit power */
+	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_TX_POWER)) != 0)
+		return rc;
+
+	dev_dbg(dw->dev, "set tx power 0x%08x\n", power);
 	return 0;
 }
 
@@ -2730,6 +2758,31 @@ static ssize_t dw1000_store_txpsr(struct device *dev,
 }
 static DW1000_ATTR_RW(txpsr, 0644);
 
+/* Transmission power */
+static ssize_t dw1000_show_tx_power(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "0x%02x%02x%02x%02x\n",
+		       dw->txpwr[3], dw->txpwr[2], dw->txpwr[1], dw->txpwr[0]);
+}
+static ssize_t dw1000_store_tx_power(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	unsigned power;
+	int rc;
+
+	if (kstrtouint(buf, 0, &power) < 0)
+		return -EINVAL;
+	if ((rc = dw1000_configure_tx_power(dw, power)) != 0)
+		return rc;
+	return count;
+}
+static DW1000_ATTR_RW(tx_power, 0644);
+
 /* Smart power control */
 static ssize_t dw1000_show_smart_power(struct device *dev,
 				       struct device_attribute *attr, char *buf)
@@ -2832,6 +2885,7 @@ static struct attribute *dw1000_attrs[] = {
 	&dev_attr_antd.attr,
 	&dev_attr_rate.attr,
 	&dev_attr_txpsr.attr,
+	&dev_attr_tx_power.attr,
 	&dev_attr_smart_power.attr,
 	&dev_attr_snr_threshold.attr,
 	&dev_attr_fpr_threshold.attr,
