@@ -1574,10 +1574,10 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 {
 	struct dw1000_rx *rx = &dw->rx;
 	struct dw1000_tsinfo *tsi = &rx->tsinfo;
-	uint32_t status, finfo, index, power, noise;
-	uint32_t ampl1, ampl2, ampl3, rxpacc, ttcko, ttcki;
-	unsigned int fpnrj = 0, fppwr = 0, fpr = 0, snr = 0;
-	unsigned int psr = 0, hsrbp = 0;
+	uint32_t finfo, status, hsrbp, rxpacc, index;
+	uint32_t ampl1, ampl2, ampl3, ttcko, ttcki;
+	unsigned int power = 0, noise = 0, snr = 0, psr = 0;
+	unsigned int fpnrj = 0, fppwr = 0, fpr = 0;
 	cycle_t cc;
 
 	/* Clear Timestamp info */
@@ -1710,10 +1710,8 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 	/* Timestamp is invalid */
 	rx->timestamp_valid = false;
 
-	dev_dbg_ratelimited(dw->dev, "SNR:%u FPR:%u FPNRJ:%u FPPWR:%u "
-			    "POWER:%u NOISE:%u RXPACC:%u\n",
-			    snr, fpr, fpnrj, fppwr,
-			    power, noise, rxpacc);
+	dev_dbg_ratelimited(dw->dev, "SNR:%u FPR:%u FPPWR:%u POWER:%u NOISE:%u\n",
+			    snr, fpr, fppwr, power, noise);
 }
 
 
