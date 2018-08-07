@@ -2230,7 +2230,6 @@ static int dw1000_start(struct ieee802154_hw *hw)
 	if ((rc = regmap_read(dw->sys_status.regs, 0, &sys_status)) != 0)
 		goto err_sys_status;
 	if (!DW1000_HSRPB_SYNC(sys_status)) {
-		dev_info(dw->dev, "resyncing HSRBP\n");
 		if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
 				       DW1000_SYS_CTRL3_HRBPT)) != 0)
 			goto err_sys_ctrl3;
