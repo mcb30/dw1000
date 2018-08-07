@@ -57,12 +57,12 @@
 		};
 	};
 
-	/* Define GPIO24 and GPIO25 as input */
+	/* Define GPIO23, GPIO24 and GPIO25 as input */
 	fragment@2 {
 		target = <&gpio>;
 		__overlay__ {
 			dw1000_pins: dw1000_pins {
-				brcm,pins = <24 25>;
+				brcm,pins = <23 24 25>;
 				brcm,function = <0>;
 			};
 		};
@@ -79,6 +79,7 @@
 				reg = <0>;
 				pinctrl-names = "default";
 				pinctrl-0 = <&dw1000_pins>;
+				power-gpio = <&gpio 23 0>;
 				reset-gpio = <&gpio 24 6>;
 				interrupt-parent = <&gpio>;
 				interrupts = <25 4>;

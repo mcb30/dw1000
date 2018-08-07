@@ -43,3 +43,7 @@ setgpio		25	INPUT	DOWN
 #
 setgpio		24	INPUT	NONE
 
+# POWER
+#
+setgpio		23	INPUT	NONE
+
