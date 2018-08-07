@@ -2943,11 +2943,17 @@ static int dw1000_reset(struct dw1000 *dw)
 {
 	int rc;
 
-	/* Release RESET GPIO */
-	gpio_set_value(dw->reset_gpio, 1);
+	/* Power on the device */
+	if (gpio_is_valid(dw->power_gpio)) {
+		gpio_set_value(dw->power_gpio, 1);
+		msleep(DW1000_POWER_ON_DELAY);
+	}
 
-	/* Wait for the device to initialise */
-	msleep(10);
+	/* Release RESET GPIO */
+	if (gpio_is_valid(dw->reset_gpio)) {
+		gpio_set_value(dw->reset_gpio, 1);
+		msleep(DW1000_HARD_RESET_DELAY);
+	}
 
 	/* Force slow SPI clock speed */
 	dw->spi->max_speed_hz = DW1000_SPI_SLOW_HZ;
@@ -3408,18 +3414,26 @@ static int dw1000_probe(struct spi_device *spi)
 	INIT_DELAYED_WORK(&dw->ptp_work, dw1000_ptp_worker);
 	hw->parent = &spi->dev;
 
-	/* Reset GPIO Pin */
+	/* Initialise reset GPIO pin as output */
 	dw->reset_gpio = of_get_named_gpio(dw->dev->of_node, "reset-gpio", 0);
-	if (!gpio_is_valid(dw->reset_gpio)) {
-		rc = -EIO;
-		goto err_get_gpio;
+	if (gpio_is_valid(dw->reset_gpio)) {
+		if ((rc = gpio_request_one(dw->reset_gpio, GPIOF_DIR_OUT |
+					   GPIOF_OPEN_DRAIN | GPIOF_INIT_LOW,
+					   "dw1000-reset")) < 0)
+			goto err_req_reset_gpio;
+	} else {
+		dev_warn(dw->dev, "device does not support GPIO RESET control");
 	}
 
-	/* Initialise reset GPIO pin as output */
-	if ((rc = gpio_request_one(dw->reset_gpio, GPIOF_DIR_OUT |
-				   GPIOF_OPEN_DRAIN | GPIOF_INIT_LOW,
-				   "dw1000-reset")) < 0)
-		goto err_req_gpio;
+	/* Initialise power GPIO pin as output */
+	dw->power_gpio = of_get_named_gpio(dw->dev->of_node, "power-gpio", 0);
+	if (gpio_is_valid(dw->power_gpio)) {
+		if ((rc = gpio_request_one(dw->power_gpio, GPIOF_DIR_OUT |
+					   GPIOF_INIT_LOW, "dw1000-power")) < 0)
+			goto err_req_power_gpio;
+	} else {
+		dev_warn(dw->dev, "device does not support GPIO POWER control");
+	}
 
 	/* Report capabilities */
 	hw->flags = (IEEE802154_HW_TX_OMIT_CKSUM |
@@ -3507,9 +3521,12 @@ static int dw1000_probe(struct spi_device *spi)
  err_reset:
  err_otp_regmap_init:
  err_regmap_init:
-	gpio_free(dw->reset_gpio);
- err_req_gpio:
- err_get_gpio:
+	if (gpio_is_valid(dw->reset_gpio))
+		gpio_free(dw->reset_gpio);
+ err_req_power_gpio:
+	if (gpio_is_valid(dw->power_gpio))
+		gpio_free(dw->power_gpio);
+ err_req_reset_gpio:
 	ieee802154_free_hw(hw);
  err_alloc_hw:
 	return rc;
@@ -3532,7 +3549,10 @@ static int dw1000_remove(struct spi_device *spi)
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
 	dw1000_reset(dw);
 	ieee802154_free_hw(hw);
-	gpio_free(dw->reset_gpio);
+	if (gpio_is_valid(dw->reset_gpio))
+		gpio_free(dw->reset_gpio);
+	if (gpio_is_valid(dw->power_gpio))
+		gpio_free(dw->power_gpio);
 	return 0;
 }
 

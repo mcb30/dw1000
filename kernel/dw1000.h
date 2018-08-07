@@ -33,6 +33,12 @@
 #include "timehires.h"
 #include "kcompat.h"
 
+/* DW1000 module power on delay (ms) */
+#define DW1000_POWER_ON_DELAY 100
+
+/* DW1000 hard reset delay (ms) */
+#define DW1000_HARD_RESET_DELAY 10
+
 /* Supported channel page (UWB only) */
 #define DW1000_CHANNEL_PAGE 4
 
@@ -862,8 +868,9 @@ struct dw1000 {
 	struct ieee802154_hw *hw;
 	/* WPAN PHY */
 	struct wpan_phy *phy;
-	/* Reset GPIO */
+	/* Control GPIOs */
 	int reset_gpio;
+	int power_gpio;
 
 	/* Register maps */
 	struct dw1000_regmap dev_id;
