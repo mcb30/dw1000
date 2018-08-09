@@ -565,9 +565,9 @@ union dw1000_rx_ttcko {
  * timestamp reception. These thresholds should be changed
  * to more meaningful values via sysfs, case by case basis.
  */
-#define DW1000_SNR_THRESHOLD_DEFAULT	1
-#define DW1000_FPR_THRESHOLD_DEFAULT	1
-#define DW1000_NOISE_THRESHOLD_DEFAULT	256
+#define DW1000_SNR_THRESHOLD_DEFAULT	0
+#define DW1000_FPR_THRESHOLD_DEFAULT	0
+#define DW1000_NOISE_THRESHOLD_DEFAULT	65535
 
 /* Timestamp repetition threshold
  *
