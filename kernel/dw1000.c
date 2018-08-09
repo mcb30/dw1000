@@ -29,7 +29,12 @@
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
 #include <net/mac802154.h>
+
 #include "dw1000.h"
+
+/* Enable GPIO controlled LEDs */
+#define DW1000_GPIO_LEDS
+
 
 /******************************************************************************
  *
@@ -3290,6 +3295,7 @@ static int dw1000_init(struct dw1000 *dw)
 				     mask, value)) != 0)
 		return rc;
 
+#ifdef DW1000_GPIO_LEDS
 	/* Configure GPIOs as LED outputs */
 	mask = (DW1000_GPIO_MODE_MSGP0_MASK | DW1000_GPIO_MODE_MSGP1_MASK |
 		DW1000_GPIO_MODE_MSGP2_MASK | DW1000_GPIO_MODE_MSGP3_MASK);
@@ -3305,7 +3311,7 @@ static int dw1000_init(struct dw1000 *dw)
 	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_LEDC,
 				     mask, value)) != 0)
 		return rc;
-
+#endif
 	/* Clear diagnostic counters */
 	mask = DW1000_EVC_CTRL_EVC_CLR;
 	value = DW1000_EVC_CTRL_EVC_CLR;
