@@ -83,10 +83,10 @@
 				reset-gpio = <&gpio 24 6>;
 				interrupt-parent = <&gpio>;
 				interrupts = <25 4>;
-				spi-max-frequency = <20000000>;
+				spi-max-frequency = <SPIMAX>;
 				decawave,eui64 = /bits/ 64 <EUI64>;
-				decawave,antd = <0x403b 0x403b>;
-				decawave,xtalt = <0x0f>;
+				decawave,antd = <ANTD16 ANTD64>;
+				decawave,xtalt = <XTALT>;
 			};
 		};
 	};
