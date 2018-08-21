@@ -1510,7 +1510,7 @@ static void dw1000_timestamp(struct dw1000 *dw,
 static void dw1000_rx_link_qual(struct dw1000 *dw)
 {
 	struct dw1000_rx *rx = &dw->rx;
-	uint32_t status, finfo, power, noise, ampl1, ampl2, ampl3, rxpacc, rxpsr;
+	uint32_t status, finfo, power, noise, ampl1, ampl2, ampl3, rxpacc, rxpsr, rxpacc_nosat;
 	unsigned int fpnrj = 0, fppwr = 0, fpr = 0, snr = 0;
 	unsigned int psr = 0, hsrbp = 0;
 	cycle_t cc;
@@ -1527,6 +1527,7 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 	power = le16_to_cpu(rx->fqual.cir_pwr);
 	noise = le16_to_cpu(rx->fqual.std_noise);
 	status = le32_to_cpu(rx->status);
+	rxpacc_nosat = le16_to_cpu(rx->rxpacc_nosat);
 
 	/* Extra frame info */
 	rxpacc = DW1000_RX_FINFO_RXPACC(finfo);
@@ -1618,16 +1619,21 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 		goto invalid;
 	}
 
+        goto debug_output;
 	return;
 
  invalid:
 	/* Timestamp is invalid */
 	rx->timestamp_valid = false;
 
+ debug_output:
 	dev_dbg_ratelimited(dw->dev, "SNR:%u FPR:%u FPNRJ:%u FPPWR:%u "
-			    "POWER:%u NOISE:%u RXPACC:%u\n",
+			    "POWER:%u NOISE:%u RXPACC:%u "
+                            "RXPSR:%u AMPL1:%u AMPL2:%u AMPL3:%u "
+                            "RXPACC_NOSAT:%u\n",
 			    snr, fpr, fpnrj, fppwr,
-			    power, noise, rxpacc);
+			    power, noise, rxpacc,
+                            rxpsr, ampl1, ampl2, ampl3, rxpacc_nosat);
 }
 
 
@@ -1878,7 +1884,7 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 	static const uint8_t hrbpt = DW1000_SYS_CTRL3_HRBPT;
 	static const uint8_t rxena = DW1000_SYS_CTRL1_RXENAB;
 	static const uint32_t clear = cpu_to_le32(DW1000_RX_STATE_CLEAR);
-	static const uint32_t mask1 = cpu_to_le32(DW1000_SYS_MASK_MACTIVE);
+	static const uint32_t mask1 = cpu_to_le32(DW1000_SYS_MASK_MACTIVE | DW1000_SYS_MASK_MERROR);
 	static const uint32_t mask0 = 0;
 
 	struct dw1000_rx *rx = &dw->rx;
@@ -1898,6 +1904,8 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 			 DW1000_EVC_OVR, &rx->evc_ovr, sizeof(rx->evc_ovr));
 	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS, 0,
 			 &rx->status, sizeof(rx->status));
+	dw1000_init_read(&rx->info, &rx->rx_rxpacc_nosat, DW1000_DRX_CONF, DW1000_DRX_RXPACC_NOSAT,
+			 &rx->rxpacc_nosat, sizeof(rx->rxpacc_nosat));
 
 	/* Prepare data SPI message */
 	spi_message_init_no_memset(&rx->data);
@@ -1921,6 +1929,17 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 
 	return 0;
 }
+
+#ifndef DOUBLE_BUFFERING
+static void dw1000_rx_error_irq(struct dw1000 *dw)
+{
+	int rc;
+	/* Enable receiver */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL1,
+			       DW1000_SYS_CTRL1_RXENAB)) != 0)
+		return;
+}
+#endif
 
 /**
  * dw1000_rx_irq() - Handle Receiver Data Frame Ready (RXDFR) event
@@ -1975,12 +1994,14 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 
 	status = le32_to_cpu(rx->status);
 
+#ifdef DOUBLE_BUFFERING
 	/* RX out-of-sync check */
 	if (unlikely(!DW1000_HSRPB_SYNC(status))) {
 		dev_warn_ratelimited(dw->dev, "RX sync lost after %d frames; "
 				    "recovering\n", dw->rx_sync_cnt);
 		goto err_recover2;
 	}
+#endif
 
 	/* RX overruns check */
 	overruns = le16_to_cpu(rx->evc_ovr);
@@ -2042,6 +2063,13 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 		goto err_data;
 	}
 
+#ifndef DOUBLE_BUFFERING
+	/* Enable receiver */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL1,
+			       DW1000_SYS_CTRL1_RXENAB)) != 0)
+		goto err_info;
+#endif
+
 	/* Hand off to IEEE 802.15.4 stack */
 	ieee802154_rx_irqsafe(dw->hw, skb, rx->lqi);
 	return;
@@ -2052,6 +2080,7 @@ static void dw1000_rx_irq(struct dw1000 *dw)
  err_info:
 	return;
 
+#ifdef DOUBLE_BUFFERING
  err_recover2:
 	/* Reset RX sync counter */
 	dw->rx_sync_cnt = 0;
@@ -2060,12 +2089,19 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	if ((rc = spi_sync(dw->spi, &rx->rcvr)) != 0) {
 		dev_err(dw->dev, "RX recovery#2 failed: %d\n", rc);
 	}
+#endif
 
  err_recover:
 	/* Send recovery SPI message */
 	if ((rc = spi_sync(dw->spi, &rx->rcvr)) != 0) {
 		dev_err(dw->dev, "RX recovery#1 failed: %d\n", rc);
 	}
+#ifndef DOUBLE_BUFFERING
+	/* Enable receiver */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL1,
+			       DW1000_SYS_CTRL1_RXENAB)) != 0)
+		goto err_info;
+#endif
 }
 
 /******************************************************************************
@@ -2098,6 +2134,11 @@ static irqreturn_t dw1000_isr_thread(int irq, void *context)
 	/* Handle received packet or receive overrun, if applicable */
 	if (sys_status & (DW1000_SYS_STATUS_RXDFR | DW1000_SYS_STATUS_RXOVRR))
 		dw1000_rx_irq(dw);
+
+#ifndef DOUBLE_BUFFERING
+	if (sys_status & DW1000_SYS_MASK_MERROR)
+		dw1000_rx_error_irq(dw);
+#endif
 
  abort:
 	return IRQ_HANDLED;
@@ -2146,7 +2187,7 @@ static int dw1000_start(struct ieee802154_hw *hw)
 
 	/* Enable interrupt generation */
 	if ((rc = regmap_write(dw->sys_mask.regs, 0,
-			       DW1000_SYS_MASK_MACTIVE)) != 0)
+			       DW1000_SYS_MASK_MACTIVE | DW1000_SYS_MASK_MERROR)) != 0)
 		goto err_sys_mask;
 
 	/* Enable receiver */
@@ -3149,6 +3190,10 @@ static int dw1000_init(struct dw1000 *dw)
 	mask = (sys_cfg_filters | DW1000_SYS_CFG_DIS_DRXB |
 		DW1000_SYS_CFG_RXAUTR);
 	value = (sys_cfg_filters | DW1000_SYS_CFG_RXAUTR);
+#ifndef DOUBLE_BUFFERING
+        value |= DW1000_SYS_CFG_DIS_DRXB;
+        value &= ~DW1000_SYS_CFG_RXAUTR;
+#endif
 	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, mask, value)) != 0)
 		return rc;
 

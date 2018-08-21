@@ -269,14 +269,30 @@ union dw1000_rx_time {
 
 /* System event mask register */
 #define DW1000_SYS_MASK_MTXFRS			0x00000080UL
+#define DW1000_SYS_MASK_MRXPHE			0x00001000UL
 #define DW1000_SYS_MASK_MRXDFR			0x00002000UL
 #define DW1000_SYS_MASK_MRXFCG			0x00004000UL
+#define DW1000_SYS_MASK_MRXFCE			0x00008000UL
+#define DW1000_SYS_MASK_MRXRFSL			0x00010000UL
+#define DW1000_SYS_MASK_MLDEERR			0x00040000UL
 #define DW1000_SYS_MASK_MRXOVRR			0x00100000UL
+#define DW1000_SYS_MASK_MRXPTO			0x00200000UL
+#define DW1000_SYS_MASK_MRXSFDTO		0x04000000UL
+#define DW1000_SYS_MASK_MAFFREJ			0x20000000UL
 
 #define DW1000_SYS_MASK_MACTIVE		( \
 	DW1000_SYS_MASK_MTXFRS		| \
 	DW1000_SYS_MASK_MRXDFR		| \
 	DW1000_SYS_MASK_MRXOVRR 	)
+
+#define DW1000_SYS_MASK_MERROR          ( \
+	DW1000_SYS_MASK_MAFFREJ		| \
+	DW1000_SYS_MASK_MRXSFDTO	| \
+	DW1000_SYS_MASK_MRXPTO		| \
+	DW1000_SYS_MASK_MLDEERR		| \
+	DW1000_SYS_MASK_MRXRFSL		| \
+	DW1000_SYS_MASK_MRXFCE		| \
+	DW1000_SYS_MASK_MRXPHE		)
 
 /* System event status register */
 #define DW1000_SYS_STATUS_CPLOCK		0x00000002UL
@@ -301,6 +317,7 @@ union dw1000_rx_time {
 #define DW1000_SYS_STATUS_RFPLL_LL		0x01000000UL
 #define DW1000_SYS_STATUS_CLKPLL_LL		0x02000000UL
 #define DW1000_SYS_STATUS_RXSFDTO		0x04000000UL
+#define DW1000_SYS_STATUS_AFFREJ		0x20000000UL
 #define DW1000_SYS_STATUS_HSRBP			0x40000000UL
 #define DW1000_SYS_STATUS_ICRBP			0x80000000UL
 #define DW1000_SYS_STATUS0		0x00
@@ -327,7 +344,8 @@ union dw1000_rx_time {
 	DW1000_SYS_STATUS_RXRFTO 	| \
 	DW1000_SYS_STATUS_LDEERR 	| \
 	DW1000_SYS_STATUS_RXPTO 	| \
-	DW1000_SYS_STATUS_RXSFDTO	)
+	DW1000_SYS_STATUS_RXSFDTO	| \
+	DW1000_SYS_STATUS_AFFREJ	)
 
 /* RX HSRBP-ICRBP sync condition */
 #define DW1000_HSRPB_SYNC(status) 	\
@@ -392,6 +410,7 @@ union dw1000_rx_time {
 #define DW1000_DRX_TUNE1B		0x06
 #define DW1000_DRX_TUNE2		0x08
 #define DW1000_DRX_TUNE4H		0x26
+#define DW1000_DRX_RXPACC_NOSAT         0x2c
 
 /* Analog RF configuration registers */
 #define DW1000_RF_RXCTRLH		0x0b
@@ -745,6 +764,8 @@ struct dw1000_rx {
 	struct dw1000_rx_fqual fqual;
 	/* Overrun count */
 	__le16 evc_ovr;
+        /* Unsaturated accumulated preamble symbols */
+        __le16 rxpacc_nosat;
 
 	/* Information SPI message */
 	struct spi_message info;
@@ -758,6 +779,8 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers sys_status;
 	/* Digital diagnostics transfer set */
 	struct dw1000_spi_transfers dig_diag;
+	/* Unsaturated accumulated preamble symbols transfer set */
+	struct dw1000_spi_transfers rx_rxpacc_nosat;
 
 	/* Data SPI message */
 	struct spi_message data;
