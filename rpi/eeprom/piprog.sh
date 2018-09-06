@@ -12,7 +12,7 @@ SYS=/sys/class/i2c-adapter/i2c-${I2C_BUS}
 DEV=${SYS}/${I2C_BUS}-00${I2C_ADDR}
 
 modprobe i2c_dev  || exit $?
-modprobe at24     || exit $?
+modprobe at24 write_timeout=250  || exit $?
 
 test -f ${FILE}   || exit 1
 test -d ${SYS}    || exit 1
