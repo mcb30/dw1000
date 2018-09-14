@@ -562,9 +562,6 @@ union dw1000_rx_ttcko {
 /* Maximum possible link quality indicator value */
 #define DW1000_LQI_MAX 0xff
 
-/* Maximum possible value for F/P */
-#define DW1000_FPR_MAX 0xff
-
 /* Link quality indicator thresholds
  *
  * The default values DO NOT put any real limitations on the
@@ -581,14 +578,6 @@ union dw1000_rx_ttcko {
  * erroneous repetitions of earlier timestamps.
  */
 #define DW1000_TIMESTAMP_REPETITION_THRESHOLD 0xffff
-
-/* Receive preamble accumulation threshold
- *
- * The receive timestamp will be considered unreliable if fewer than
- * this fraction of the expected number of preamble symbols are
- * accumulated.
- */
-#define DW1000_RXPACC_THRESHOLD 8
 
 /* Pulse repetition frequencies */
 enum dw1000_prf {
