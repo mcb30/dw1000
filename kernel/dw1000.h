@@ -33,6 +33,12 @@
 #include "timehires.h"
 #include "kcompat.h"
 
+/* DW1000 module power on delay (ms) */
+#define DW1000_POWER_ON_DELAY 100
+
+/* DW1000 hard reset delay (ms) */
+#define DW1000_HARD_RESET_DELAY 10
+
 /* Supported channel page (UWB only) */
 #define DW1000_CHANNEL_PAGE 4
 
@@ -131,6 +137,22 @@ union dw1000_rx_time {
 		/* First path amplitude point 1 */
 		__le16 fp_ampl1;
 	} __packed;
+};
+
+/* Receive time tracking interval */
+union dw1000_rx_ttcki {
+	/* Tracking interval */
+	__le32 tcki;
+	/* Raw bytes */
+	uint8_t raw[4];
+};
+
+/* Receive time tracking offset */
+union dw1000_rx_ttcko {
+	/* Tracking offset */
+	__le32 tofs;
+	/* Raw bytes */
+	uint8_t raw[3];
 };
 
 /* Register files */
@@ -511,12 +533,14 @@ union dw1000_rx_time {
 /* Maximum multiplier adjustment
  *
  * This represents the maximum change that can be made to the cycle
- * counter multiplier without exceeding the 32-bit range, expressed as
- * parts per billion of the original multiplier value.  Some margin is
- * provided to allow for the various conversion factors used in
- * calculations.
+ * counter multiplier without exceeding the 32-bit range, expressed
+ * as parts per million (<<16) of the original multiplier value.
+ * Some margin is provided to allow for the various conversion
+ * factors used in calculations.
+ *
+ * This allows adjusting the frequency by +/- 32767ppm
  */
-#define DW1000_PTP_MAX_ADJ 990000000L
+#define DW1000_PTP_MAX_ADJ 2147483646ULL
 
 /* Cycle counter wraparound check interval: well within 17.2074 seconds */
 #define DW1000_PTP_WORK_DELAY (3 * HZ)
@@ -547,9 +571,9 @@ union dw1000_rx_time {
  * timestamp reception. These thresholds should be changed
  * to more meaningful values via sysfs, case by case basis.
  */
-#define DW1000_SNR_THRESHOLD_DEFAULT	1
-#define DW1000_FPR_THRESHOLD_DEFAULT	1
-#define DW1000_NOISE_THRESHOLD_DEFAULT	256
+#define DW1000_SNR_THRESHOLD_DEFAULT	0
+#define DW1000_FPR_THRESHOLD_DEFAULT	0
+#define DW1000_NOISE_THRESHOLD_DEFAULT	65535
 
 /* Timestamp repetition threshold
  *
@@ -681,6 +705,38 @@ struct dw1000_regmap {
 	const struct dw1000_regmap_config *config;
 };
 
+/* Timestamp info */
+struct dw1000_tsinfo {
+	/* Raw hardware timestamp */
+	cycle_t rawts;
+	/* Link Quality Indicator */
+	uint16_t lqi;
+	/* Signal-to-Noise estimate */
+	uint16_t snr;
+	/* First Path Quality estimate */
+	uint16_t fpr;
+	/* Standard Deviation of Noise */
+	uint16_t noise;
+	/* Preamble Accumulation Count */
+	uint16_t rxpacc;
+	/* First Path Index */
+	uint16_t fp_index;
+	/* First Path Amplitude #1 */
+	uint16_t fp_ampl1;
+	/* First Path Amplitude #2 */
+	uint16_t fp_ampl2;
+	/* First Path Amplitude #3 */
+	uint16_t fp_ampl3;
+	/* Channel Impulse Response Power */
+	uint32_t cir_pwr;
+	/* First Patch Impulse Power */
+	uint32_t fp_pwr;
+	/* Time tracking offset */
+	uint32_t ttcko;
+	/* Time tracking interval */
+	uint32_t ttcki;
+};
+
 /* Transmit descriptor */
 struct dw1000_tx {
 	/* Socket buffer */
@@ -692,6 +748,8 @@ struct dw1000_tx {
 	uint8_t check;
 	/* Timestamp */
 	union dw1000_timestamp time;
+	/* Timestamp info */
+	struct dw1000_tsinfo tsinfo;
 
 	/* Data SPI message */
 	struct spi_message data;
@@ -741,8 +799,13 @@ struct dw1000_rx {
 	__le32 finfo;
 	/* Timestamp */
 	union dw1000_rx_time time;
+	/* Timestamp info */
+	struct dw1000_tsinfo tsinfo;
 	/* Frame quality */
 	struct dw1000_rx_fqual fqual;
+	/* Time tracking */
+	union dw1000_rx_ttcko ttcko;
+	union dw1000_rx_ttcki ttcki;
 	/* Overrun count */
 	__le16 evc_ovr;
 
@@ -754,6 +817,9 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers rx_time;
 	/* Frame quality transfer set */
 	struct dw1000_spi_transfers rx_fqual;
+	/* Frame time tracking transfer set */
+	struct dw1000_spi_transfers rx_ttcko;
+	struct dw1000_spi_transfers rx_ttcki;
 	/* System status transfer set */
 	struct dw1000_spi_transfers sys_status;
 	/* Digital diagnostics transfer set */
@@ -802,8 +868,9 @@ struct dw1000 {
 	struct ieee802154_hw *hw;
 	/* WPAN PHY */
 	struct wpan_phy *phy;
-	/* Reset GPIO */
+	/* Control GPIOs */
 	int reset_gpio;
+	int power_gpio;
 
 	/* Register maps */
 	struct dw1000_regmap dev_id;
@@ -862,6 +929,8 @@ struct dw1000 {
 	uint16_t antd[DW1000_PRF_COUNT];
 	/* Preamble codes */
 	unsigned int pcode[DW1000_PRF_COUNT];
+	/* Transmit power */
+	uint8_t txpwr[4];
 	/* Pulse repetition frequency */
 	enum dw1000_prf prf;
 	/* Data rate */

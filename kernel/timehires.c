@@ -131,6 +131,7 @@ void hires_counter_init(
 	struct timehires start,
 	u32 bits, u64 mult)
 {
+	tc->cycle_time  = 0;
 	tc->cycle_read  = read;
 	tc->cycle_sync  = read(tc);
 	tc->cycle_mask  = (1ULL<<bits)-1;
@@ -153,15 +154,16 @@ void hires_counter_sync(
 {
 	struct timehires time_delta;
 	cycle_t cycle_delta;
-	cycle_t cycle_time;
+	cycle_t cycle_count;
 
-	cycle_time  = hires_counter_read(tc);
-	cycle_delta = (cycle_time - tc->cycle_sync) & tc->cycle_mask;
+	cycle_count  = hires_counter_read(tc);
+	cycle_delta = (cycle_count - tc->cycle_sync) & tc->cycle_mask;
 	time_delta  = timehires_mull64(cycle_delta, tc->ns_mult_fwd);
-
-	tc->cycle_sync = cycle_time;
-	tc->time_sync = timehires_add(tc->time_sync, time_delta);
+	
+	tc->cycle_time += cycle_delta;
+	tc->cycle_sync = cycle_count;
 	tc->ns_mult_bwd = tc->ns_mult_fwd;
+	tc->time_sync = timehires_add(tc->time_sync, time_delta);
 }
 
 /**
@@ -210,6 +212,33 @@ void hires_counter_adjtime(
 }
 
 /**
+ * hires_counter_cyc2raw - Convert HW cycles to raw timestamp
+ * @tc:		Pointer to HiRes counter
+ * @cycle_time:	Cycle counter value
+ *
+ * Convert HW cycle count to monotonous raw cycle count.
+ */
+cycle_t hires_counter_cyc2raw(
+	struct hires_counter *tc,
+	cycle_t cycle_count)
+{
+	cycle_t cycle_delta;
+	cycle_t cycles;
+
+	cycle_delta = (cycle_count - tc->cycle_sync) & tc->cycle_mask;
+
+	if (cycle_delta < tc->cycle_max) {
+		cycles = tc->cycle_time + cycle_delta;
+	}
+	else {
+		cycle_delta = (tc->cycle_sync - cycle_count) & tc->cycle_mask;
+		cycles = tc->cycle_time - cycle_delta;
+	}
+
+	return cycles;
+}
+
+/**
  * hires_counter_cyc2time - Convert HW cycles to HiRes timestamp
  * @tc:		Pointer to HiRes counter
  * @cycle_time:	Cycle counter value
@@ -223,20 +252,19 @@ void hires_counter_adjtime(
  */
 struct timehires hires_counter_cyc2time(
 	struct hires_counter *tc,
-	cycle_t cycle_time)
+	cycle_t cycle_count)
 {
 	struct timehires time;
 	cycle_t cycle_delta;
 
-	cycle_delta = (cycle_time - tc->cycle_sync) & tc->cycle_mask;
+	cycle_delta = (cycle_count - tc->cycle_sync) & tc->cycle_mask;
 
 	if (cycle_delta < tc->cycle_max) {
 		time = timehires_mull64(cycle_delta, tc->ns_mult_fwd);
 		time = timehires_add(tc->time_sync, time);
 	}
 	else {
-		cycle_delta = (tc->cycle_sync - cycle_time) & tc->cycle_mask;
-
+		cycle_delta = (tc->cycle_sync - cycle_count) & tc->cycle_mask;
 		time = timehires_mull64(cycle_delta, tc->ns_mult_bwd);
 		time = timehires_sub(tc->time_sync, time);
 	}

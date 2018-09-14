@@ -779,7 +779,8 @@ enum dw1000_configuration_change {
 	DW1000_CONFIGURE_RATE		= BIT(5),
 	DW1000_CONFIGURE_TXPSR		= BIT(6),
 	DW1000_CONFIGURE_XTAL_TRIM	= BIT(7),
-	DW1000_CONFIGURE_SMART_POWER	= BIT(8),
+	DW1000_CONFIGURE_TX_POWER	= BIT(8),
+	DW1000_CONFIGURE_SMART_POWER	= BIT(9),
 };
 
 /**
@@ -833,7 +834,6 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	const struct dw1000_rate_config *rate_cfg;
 	const struct dw1000_txpsr_config *txpsr_cfg;
 	const struct dw1000_fixed_config *fixed_cfg;
-	uint8_t tx_power[sizeof(channel_cfg->tx_power[0])];
 	uint16_t lde_repc;
 	uint16_t lde_rxantd;
 	unsigned int channel;
@@ -843,7 +843,6 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	enum dw1000_rate rate;
 	enum dw1000_txpsr txpsr;
 	bool smart_power;
-	unsigned int i;
 	int mask;
 	int value;
 	int rc;
@@ -914,13 +913,17 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	/* TX_POWER register */
 	if (changed & (DW1000_CONFIGURE_CHANNEL | DW1000_CONFIGURE_PRF |
 		       DW1000_CONFIGURE_SMART_POWER)) {
-		memcpy(tx_power, &channel_cfg->tx_power[prf], sizeof(tx_power));
-		if (!smart_power) {
-			for (i = 1; i < sizeof(tx_power); i++)
-				tx_power[i] = tx_power[0];
+		if (smart_power) {
+			memcpy(dw->txpwr, channel_cfg->tx_power[prf], sizeof(dw->txpwr));
+		} else {
+			dw->txpwr[0] = dw->txpwr[3] = 0;
+			dw->txpwr[1] = dw->txpwr[2] = channel_cfg->tx_power[prf][0];
 		}
-		if ((rc = regmap_raw_write(dw->tx_power.regs, 0, tx_power,
-					   sizeof(tx_power))) != 0)
+	}
+	if (changed & (DW1000_CONFIGURE_CHANNEL | DW1000_CONFIGURE_PRF |
+		       DW1000_CONFIGURE_TX_POWER | DW1000_CONFIGURE_SMART_POWER)) {
+		if ((rc = regmap_raw_write(dw->tx_power.regs, 0, dw->txpwr,
+					   sizeof(dw->txpwr))) != 0)
 			return rc;
 	}
 
@@ -1228,6 +1231,31 @@ static int dw1000_configure_txpsr(struct dw1000 *dw, enum dw1000_txpsr txpsr)
 }
 
 /**
+ * dw1000_configure_tx_power() - Configure tx power control
+ *
+ * @dw:			DW1000 device
+ * @power:		Tx power level
+ * @return:		0 on success or -errno
+ */
+static int dw1000_configure_tx_power(struct dw1000 *dw, uint32_t power)
+{
+	int rc;
+
+	/* Record power level */
+	dw->txpwr[0] = (power >>  0) & 0xff;
+	dw->txpwr[1] = (power >>  8) & 0xff;
+	dw->txpwr[2] = (power >> 16) & 0xff;
+	dw->txpwr[3] = (power >> 24) & 0xff;
+
+	/* Reconfigure transmit power */
+	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_TX_POWER)) != 0)
+		return rc;
+
+	dev_dbg(dw->dev, "set tx power 0x%08x\n", power);
+	return 0;
+}
+
+/**
  * dw1000_configure_smart_power() - Configure use of smart power control
  *
  * @dw:			DW1000 device
@@ -1331,7 +1359,8 @@ static int dw1000_ptp_adjfine(struct ptp_clock_info *ptp, long delta)
 
 	/* Calculate multiplier value */
 	mult = (delta < 0) ? -delta : delta;
-	mult *= DW1000_CYCLECOUNTER_MULT / 65536000000ULL;
+	/* mult *= DW1000_CYCLECOUNTER_MULT / 65536000000ULL; */
+	mult = (mult * (DW1000_CYCLECOUNTER_MULT / 128000000ULL)) >> 9;
 	mult = (delta < 0) ? DW1000_CYCLECOUNTER_MULT - mult:
 			     DW1000_CYCLECOUNTER_MULT + mult;
 
@@ -1502,6 +1531,40 @@ static void dw1000_timestamp(struct dw1000 *dw,
 }
 
 /**
+ * dw1000_tsinfo() - Convert DW1000 tsinfo to kernel timestamp
+ *
+ * @dw:			DW1000 device
+ * @time:		DW1000 timestamp
+ * @tsinfo:		DW1000 tsinfo
+ * @hwtstamps:		Kernel hardware timestamp
+ */
+static void dw1000_tsinfo(struct dw1000 *dw,
+			  const union dw1000_timestamp *time,
+			  struct dw1000_tsinfo *tsinfo,
+			  struct skb_shared_hwtstamps *hwtstamps)
+{
+#ifdef HAVE_HWTSINFO
+	struct hires_counter *tc = &dw->ptp.tc;
+	cycle_t rawts;
+	cycle_t cc;
+
+	/* Get 5-byte timestamp */
+	cc = le64_to_cpu(time->cc) & DW1000_TIMESTAMP_MASK;
+
+	/* Convert timestamp to nanoseconds */
+	mutex_lock(&dw->ptp.mutex);
+	rawts = hires_counter_cyc2raw(tc, cc);
+	mutex_unlock(&dw->ptp.mutex);
+
+	/* Assign raw timestamp to tsinfo */
+	tsinfo->rawts = rawts;
+
+	/* Fill in kernel timestamp info */
+	memcpy(hwtstamps->hwtsinfo, tsinfo, sizeof(*tsinfo));
+#endif
+}
+
+/**
  * dw1000_rx_link_qual() - Check RX quality and calculate KPIs, as
  *			   described in the DW1000 manual section 4.7.
  *
@@ -1510,27 +1573,23 @@ static void dw1000_timestamp(struct dw1000 *dw,
 static void dw1000_rx_link_qual(struct dw1000 *dw)
 {
 	struct dw1000_rx *rx = &dw->rx;
-	uint32_t status, finfo, power, noise, ampl1, ampl2, ampl3, rxpacc, rxpsr;
-	unsigned int fpnrj = 0, fppwr = 0, fpr = 0, snr = 0;
-	unsigned int psr = 0, hsrbp = 0;
+	struct dw1000_tsinfo *tsi = &rx->tsinfo;
+	uint32_t finfo, status, hsrbp, rxpacc, index;
+	uint32_t ampl1, ampl2, ampl3, ttcko, ttcki;
+	unsigned int power = 0, noise = 0, snr = 0, psr = 0;
+	unsigned int fpnrj = 0, fppwr = 0, fpr = 0;
 	cycle_t cc;
+
+	/* Clear Timestamp info */
+	memset(tsi, 0, sizeof(*tsi));
 
 	/* Assume frame and timestamp are valid */
 	rx->frame_valid = true;
 	rx->timestamp_valid = true;
 
-	/* Extract measurements */
+	/* Extract status */
 	finfo = le32_to_cpu(rx->finfo);
-	ampl1 = le16_to_cpu(rx->time.fp_ampl1);
-	ampl2 = le16_to_cpu(rx->fqual.fp_ampl2);
-	ampl3 = le16_to_cpu(rx->fqual.fp_ampl3);
-	power = le16_to_cpu(rx->fqual.cir_pwr);
-	noise = le16_to_cpu(rx->fqual.std_noise);
 	status = le32_to_cpu(rx->status);
-
-	/* Extra frame info */
-	rxpacc = DW1000_RX_FINFO_RXPACC(finfo);
-	rxpsr  = DW1000_RX_FINFO_RXPSR(finfo);
 
 	/* Extract buffer id */
 	hsrbp = DW1000_RX_STATUS_HSRBP(status);
@@ -1557,6 +1616,28 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 	/* Remember timestamp */
 	dw->rx_timestamp[hsrbp] = cc;
 
+	/* Extract KPIs */
+	rxpacc = DW1000_RX_FINFO_RXPACC(finfo);
+	index = le16_to_cpu(rx->time.fp_index);
+	ampl1 = le16_to_cpu(rx->time.fp_ampl1);
+	ampl2 = le16_to_cpu(rx->fqual.fp_ampl2);
+	ampl3 = le16_to_cpu(rx->fqual.fp_ampl3);
+	power = le16_to_cpu(rx->fqual.cir_pwr);
+	noise = le16_to_cpu(rx->fqual.std_noise);
+	ttcko = le32_to_cpu(rx->ttcko.tofs);
+	ttcki = le32_to_cpu(rx->ttcki.tcki);
+
+	/* Assign timestamp information */
+	tsi->noise = noise;
+	tsi->rxpacc = rxpacc;
+	tsi->fp_index = index;
+	tsi->fp_ampl1 = ampl1;
+	tsi->fp_ampl2 = ampl2;
+	tsi->fp_ampl3 = ampl3;
+	tsi->cir_pwr = power;
+	tsi->ttcko = ttcko;
+	tsi->ttcki = ttcki;
+
 	/* Sanity check */
 	if (noise == 0 || power == 0 || rxpacc == 0 || ampl1 == 0) {
 		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
@@ -1578,7 +1659,12 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 	fpr = (fpnrj / power) >> (DW1000_RX_CIR_PWR_SCALE - 8);
 
 	/* The reported LQI is upper limited */
-	rx->lqi = (snr < DW1000_LQI_MAX) ? snr : DW1000_LQI_MAX;
+	rx->lqi = tsi->lqi = (snr < DW1000_LQI_MAX) ? snr : DW1000_LQI_MAX;
+
+	/* Assign calculated KPIs */
+	tsi->fp_pwr = fppwr;
+	tsi->snr = snr;
+	tsi->fpr = fpr;
 
 	/* Check Preamble length */
 	if (rxpacc < psr/DW1000_RXPACC_THRESHOLD) {
@@ -1624,10 +1710,8 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 	/* Timestamp is invalid */
 	rx->timestamp_valid = false;
 
-	dev_dbg_ratelimited(dw->dev, "SNR:%u FPR:%u FPNRJ:%u FPPWR:%u "
-			    "POWER:%u NOISE:%u RXPACC:%u\n",
-			    snr, fpr, fpnrj, fppwr,
-			    power, noise, rxpacc);
+	dev_dbg_ratelimited(dw->dev, "SNR:%u FPR:%u FPPWR:%u POWER:%u NOISE:%u\n",
+			    snr, fpr, fppwr, power, noise);
 }
 
 
@@ -1832,6 +1916,7 @@ static void dw1000_tx_irq(struct dw1000 *dw)
 	tx->skb = NULL;
 	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_IN_PROGRESS)) {
 		dw1000_timestamp(dw, &tx->time, &hwtstamps);
+		dw1000_tsinfo(dw, &tx->time, &tx->tsinfo, &hwtstamps);
 		skb_tstamp_tx(skb, &hwtstamps);
 	}
 	spin_unlock_irqrestore(&dw->tx_lock, flags);
@@ -1894,6 +1979,10 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 			 &rx->time, sizeof(rx->time));
 	dw1000_init_read(&rx->info, &rx->rx_fqual, DW1000_RX_FQUAL, 0,
 			 &rx->fqual, sizeof(rx->fqual));
+	dw1000_init_read(&rx->info, &rx->rx_ttcki, DW1000_RX_TTCKI, 0,
+			 &rx->ttcki, sizeof(rx->ttcki.raw));
+	dw1000_init_read(&rx->info, &rx->rx_ttcko, DW1000_RX_TTCKO, 0,
+			 &rx->ttcko, sizeof(rx->ttcko.raw));
 	dw1000_init_read(&rx->info, &rx->dig_diag, DW1000_DIG_DIAG,
 			 DW1000_EVC_OVR, &rx->evc_ovr, sizeof(rx->evc_ovr));
 	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS, 0,
@@ -2032,6 +2121,9 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	if (rx->timestamp_valid)
 		dw1000_timestamp(dw, &rx->time.rx_stamp, skb_hwtstamps(skb));
 
+	/* Record timestamp info */
+	dw1000_tsinfo(dw, &rx->time.rx_stamp, &rx->tsinfo, skb_hwtstamps(skb));
+
 	/* Update data SPI message */
 	rx->rx_buffer.data.rx_buf = skb->data;
 	rx->rx_buffer.data.len = len;
@@ -2138,7 +2230,6 @@ static int dw1000_start(struct ieee802154_hw *hw)
 	if ((rc = regmap_read(dw->sys_status.regs, 0, &sys_status)) != 0)
 		goto err_sys_status;
 	if (!DW1000_HSRPB_SYNC(sys_status)) {
-		dev_info(dw->dev, "resyncing HSRBP\n");
 		if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
 				       DW1000_SYS_CTRL3_HRBPT)) != 0)
 			goto err_sys_ctrl3;
@@ -2664,6 +2755,31 @@ static ssize_t dw1000_store_txpsr(struct device *dev,
 }
 static DW1000_ATTR_RW(txpsr, 0644);
 
+/* Transmission power */
+static ssize_t dw1000_show_tx_power(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+
+	return sprintf(buf, "0x%02x%02x%02x%02x\n",
+		       dw->txpwr[3], dw->txpwr[2], dw->txpwr[1], dw->txpwr[0]);
+}
+static ssize_t dw1000_store_tx_power(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct dw1000 *dw = to_dw1000(dev);
+	unsigned power;
+	int rc;
+
+	if (kstrtouint(buf, 0, &power) < 0)
+		return -EINVAL;
+	if ((rc = dw1000_configure_tx_power(dw, power)) != 0)
+		return rc;
+	return count;
+}
+static DW1000_ATTR_RW(tx_power, 0644);
+
 /* Smart power control */
 static ssize_t dw1000_show_smart_power(struct device *dev,
 				       struct device_attribute *attr, char *buf)
@@ -2766,6 +2882,7 @@ static struct attribute *dw1000_attrs[] = {
 	&dev_attr_antd.attr,
 	&dev_attr_rate.attr,
 	&dev_attr_txpsr.attr,
+	&dev_attr_tx_power.attr,
 	&dev_attr_smart_power.attr,
 	&dev_attr_snr_threshold.attr,
 	&dev_attr_fpr_threshold.attr,
@@ -2826,11 +2943,17 @@ static int dw1000_reset(struct dw1000 *dw)
 {
 	int rc;
 
-	/* Release RESET GPIO */
-	gpio_set_value(dw->reset_gpio, 1);
+	/* Power on the device */
+	if (gpio_is_valid(dw->power_gpio)) {
+		gpio_set_value(dw->power_gpio, 1);
+		msleep(DW1000_POWER_ON_DELAY);
+	}
 
-	/* Wait for the device to initialise */
-	msleep(10);
+	/* Release RESET GPIO */
+	if (gpio_is_valid(dw->reset_gpio)) {
+		gpio_set_value(dw->reset_gpio, 1);
+		msleep(DW1000_HARD_RESET_DELAY);
+	}
 
 	/* Force slow SPI clock speed */
 	dw->spi->max_speed_hz = DW1000_SPI_SLOW_HZ;
@@ -3291,18 +3414,26 @@ static int dw1000_probe(struct spi_device *spi)
 	INIT_DELAYED_WORK(&dw->ptp_work, dw1000_ptp_worker);
 	hw->parent = &spi->dev;
 
-	/* Reset GPIO Pin */
+	/* Initialise reset GPIO pin as output */
 	dw->reset_gpio = of_get_named_gpio(dw->dev->of_node, "reset-gpio", 0);
-	if (!gpio_is_valid(dw->reset_gpio)) {
-		rc = -EIO;
-		goto err_get_gpio;
+	if (gpio_is_valid(dw->reset_gpio)) {
+		if ((rc = gpio_request_one(dw->reset_gpio, GPIOF_DIR_OUT |
+					   GPIOF_OPEN_DRAIN | GPIOF_INIT_LOW,
+					   "dw1000-reset")) < 0)
+			goto err_req_reset_gpio;
+	} else {
+		dev_warn(dw->dev, "device does not support GPIO RESET control");
 	}
 
-	/* Initialise reset GPIO pin as output */
-	if ((rc = gpio_request_one(dw->reset_gpio, GPIOF_DIR_OUT |
-				   GPIOF_OPEN_DRAIN | GPIOF_INIT_LOW,
-				   "dw1000-reset")) < 0)
-		goto err_req_gpio;
+	/* Initialise power GPIO pin as output */
+	dw->power_gpio = of_get_named_gpio(dw->dev->of_node, "power-gpio", 0);
+	if (gpio_is_valid(dw->power_gpio)) {
+		if ((rc = gpio_request_one(dw->power_gpio, GPIOF_DIR_OUT |
+					   GPIOF_INIT_LOW, "dw1000-power")) < 0)
+			goto err_req_power_gpio;
+	} else {
+		dev_warn(dw->dev, "device does not support GPIO POWER control");
+	}
 
 	/* Report capabilities */
 	hw->flags = (IEEE802154_HW_TX_OMIT_CKSUM |
@@ -3390,9 +3521,12 @@ static int dw1000_probe(struct spi_device *spi)
  err_reset:
  err_otp_regmap_init:
  err_regmap_init:
-	gpio_free(dw->reset_gpio);
- err_req_gpio:
- err_get_gpio:
+	if (gpio_is_valid(dw->reset_gpio))
+		gpio_free(dw->reset_gpio);
+ err_req_power_gpio:
+	if (gpio_is_valid(dw->power_gpio))
+		gpio_free(dw->power_gpio);
+ err_req_reset_gpio:
 	ieee802154_free_hw(hw);
  err_alloc_hw:
 	return rc;
@@ -3415,7 +3549,10 @@ static int dw1000_remove(struct spi_device *spi)
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
 	dw1000_reset(dw);
 	ieee802154_free_hw(hw);
-	gpio_free(dw->reset_gpio);
+	if (gpio_is_valid(dw->reset_gpio))
+		gpio_free(dw->reset_gpio);
+	if (gpio_is_valid(dw->power_gpio))
+		gpio_free(dw->power_gpio);
 	return 0;
 }
 

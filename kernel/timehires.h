@@ -45,6 +45,7 @@ typedef __u64 cycle_t;
 struct hires_counter {
 	cycle_t (*cycle_read)(const struct hires_counter *);
 	struct timehires time_sync;
+	cycle_t cycle_time;
 	cycle_t cycle_sync;
 	cycle_t cycle_mask;
 	cycle_t cycle_max;
@@ -79,10 +80,15 @@ extern void hires_counter_adjtime(
 	struct timehires time_adj);
 
 
+/* Convert cycle count to monotonous cycle time */
+extern cycle_t hires_counter_cyc2raw(
+	struct hires_counter *tc,
+	cycle_t cycle_count);
+
 /* Convert cycle count to HiRes timestamp */
 extern struct timehires hires_counter_cyc2time(
 	struct hires_counter *tc,
-	cycle_t cycle_time);
+	cycle_t cycle_count);
 
 
 /* Read underlying counter */
