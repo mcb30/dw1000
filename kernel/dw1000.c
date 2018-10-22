@@ -475,12 +475,6 @@ static int dw1000_regmap_init(struct dw1000 *dw)
  *
  */
 
-static const uint8_t sarc_a1 = DW1000_RF_SENSOR_SARC_A1;
-static const uint8_t sarc_b1 = DW1000_RF_SENSOR_SARC_B1;
-static const uint8_t sarc_b2 = DW1000_RF_SENSOR_SARC_B2;
-static const uint8_t sarc_on = DW1000_TC_SARC_CTRL;
-static const uint8_t sarc_off = 0;
-
 /**
  * dw1000_sar_prepare() - Prepare SAR SPI message
  *
@@ -494,22 +488,29 @@ static int dw1000_sar_prepare(struct dw1000 *dw)
 	/* Initialise SAR descriptor */
 	memset(sar, 0, sizeof(*sar));
 
+	/* Set contant values used in SPI transfer */
+	sar->ctrl_a1  = DW1000_RF_SENSOR_SARC_A1;
+	sar->ctrl_b1  = DW1000_RF_SENSOR_SARC_B1;
+	sar->ctrl_b2  = DW1000_RF_SENSOR_SARC_B2;
+	sar->ctrl_ena = DW1000_TC_SARC_CTRL;
+	sar->ctrl_dis = 0;
+
 	/* Prepare SAR SPI message */
 	spi_message_init_no_memset(&sar->msg);
 	dw1000_init_write(&sar->msg, &sar->sarc_a1, DW1000_RF_CONF,
-			  DW1000_RF_SENSOR_SARC_A, &sarc_a1, sizeof(sarc_a1));
+			  DW1000_RF_SENSOR_SARC_A, &sar->ctrl_a1, sizeof(sar->ctrl_a1));
 	dw1000_init_write(&sar->msg, &sar->sarc_b1, DW1000_RF_CONF,
-			  DW1000_RF_SENSOR_SARC_B, &sarc_b1, sizeof(sarc_b1));
+			  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b1, sizeof(sar->ctrl_b1));
 	dw1000_init_write(&sar->msg, &sar->sarc_b2, DW1000_RF_CONF,
-			  DW1000_RF_SENSOR_SARC_B, &sarc_b2, sizeof(sarc_b2));
-	dw1000_init_write(&sar->msg, &sar->sarc_on, DW1000_TX_CAL,
-			  DW1000_TC_SARC, &sarc_on, sizeof(sarc_on));
+			  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b2, sizeof(sar->ctrl_b2));
+	dw1000_init_write(&sar->msg, &sar->sarc_ena, DW1000_TX_CAL,
+			  DW1000_TC_SARC, &sar->ctrl_ena, sizeof(sar->ctrl_ena));
 
 	/* Keep the ADC on for a few us */
-	sar->sarc_on.data.delay_usecs = DW1000_SAR_WAIT_US;
+	sar->sarc_ena.data.delay_usecs = DW1000_SAR_WAIT_US;
 
-	dw1000_init_write(&sar->msg, &sar->sarc_off, DW1000_TX_CAL,
-			  DW1000_TC_SARC, &sarc_off, sizeof(sarc_off));
+	dw1000_init_write(&sar->msg, &sar->sarc_dis, DW1000_TX_CAL,
+			  DW1000_TC_SARC, &sar->ctrl_dis, sizeof(sar->ctrl_dis));
 	dw1000_init_read(&sar->msg, &sar->sarl, DW1000_TX_CAL,
 			 DW1000_TC_SARL, &sar->adc.raw, sizeof(sar->adc.raw));
 
@@ -1801,17 +1802,17 @@ static void dw1000_tx_complete(struct dw1000 *dw, struct sk_buff *skb);
  */
 static int dw1000_tx_prepare(struct dw1000 *dw)
 {
-	static const uint8_t trxoff = DW1000_SYS_CTRL0_TRXOFF;
-	static const uint8_t txstrt = (DW1000_SYS_CTRL0_TXSTRT |
-				       DW1000_SYS_CTRL0_WAIT4RESP);
-	static const uint8_t txfrs = (DW1000_SYS_STATUS0_TXFRB |
-				      DW1000_SYS_STATUS0_TXPRS |
-				      DW1000_SYS_STATUS0_TXPHS |
-				      DW1000_SYS_STATUS0_TXFRS);
 	struct dw1000_tx *tx = &dw->tx;
+	struct dw1000_sar *sar = &dw->sar;
 
 	/* Initialise transmit descriptor */
 	memset(tx, 0, sizeof(*tx));
+
+	/* Set constant values used in SPI transfer */
+	tx->trxoff = DW1000_SYS_CTRL0_TRXOFF;
+	tx->txstrt = DW1000_SYS_CTRL0_TXSTRT | DW1000_SYS_CTRL0_WAIT4RESP;
+	tx->txfrs  = DW1000_SYS_STATUS0_TXFRB | DW1000_SYS_STATUS0_TXPRS |
+		     DW1000_SYS_STATUS0_TXPHS | DW1000_SYS_STATUS0_TXFRS;
 
 	/* Prepare data SPI message */
 	spi_message_init_no_memset(&tx->data);
@@ -1820,24 +1821,24 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
 	dw1000_init_write(&tx->data, &tx->tx_buffer, DW1000_TX_BUFFER, 0,
 			  NULL, 0);
 	dw1000_init_write(&tx->data, &tx->sys_ctrl_trxoff, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL0, &trxoff, sizeof(trxoff));
+			  DW1000_SYS_CTRL0, &tx->trxoff, sizeof(tx->trxoff));
 	dw1000_init_write(&tx->data, &tx->tx_fctrl, DW1000_TX_FCTRL,
 			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
 
 	/* Include SAR ADC control only if enabled */
 	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
 		dw1000_init_write(&tx->data, &tx->sarc_a1, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_A, &sarc_a1, sizeof(sarc_a1));
+				  DW1000_RF_SENSOR_SARC_A, &sar->ctrl_a1, sizeof(sar->ctrl_a1));
 		dw1000_init_write(&tx->data, &tx->sarc_b1, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_B, &sarc_b1, sizeof(sarc_b1));
+				  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b1, sizeof(sar->ctrl_b1));
 		dw1000_init_write(&tx->data, &tx->sarc_b2, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_B, &sarc_b2, sizeof(sarc_b2));
-		dw1000_init_write(&tx->data, &tx->sarc_on, DW1000_TX_CAL,
-				  DW1000_TC_SARC, &sarc_on, sizeof(sarc_on));
+				  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b2, sizeof(sar->ctrl_b2));
+		dw1000_init_write(&tx->data, &tx->sarc_ena, DW1000_TX_CAL,
+				  DW1000_TC_SARC, &sar->ctrl_ena, sizeof(sar->ctrl_ena));
 	}
 
 	dw1000_init_write(&tx->data, &tx->sys_ctrl_txstrt, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL0, &txstrt, sizeof(txstrt));
+			  DW1000_SYS_CTRL0, &tx->txstrt, sizeof(tx->txstrt));
 	dw1000_init_read(&tx->data, &tx->sys_ctrl_check, DW1000_SYS_CTRL,
 			 DW1000_SYS_CTRL0, &tx->check, sizeof(tx->check));
 
@@ -1846,14 +1847,14 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
 
 	/* Include SAR ADC control only if enabled */
 	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		dw1000_init_write(&tx->info, &tx->sarc_off, DW1000_TX_CAL,
-				  DW1000_TC_SARC, &sarc_off, sizeof(sarc_off));
+		dw1000_init_write(&tx->info, &tx->sarc_dis, DW1000_TX_CAL,
+				  DW1000_TC_SARC, &sar->ctrl_dis, sizeof(sar->ctrl_dis));
 		dw1000_init_read(&tx->info, &tx->sarl, DW1000_TX_CAL,
 				 DW1000_TC_SARL, &tx->adc.raw, sizeof(tx->adc.raw));
 	}
 
 	dw1000_init_write(&tx->info, &tx->sys_status, DW1000_SYS_STATUS,
-			  DW1000_SYS_STATUS0, &txfrs, sizeof(txfrs));
+			  DW1000_SYS_STATUS0, &tx->txfrs, sizeof(tx->txfrs));
 	dw1000_init_read(&tx->info, &tx->tx_time, DW1000_TX_TIME,
 			 DW1000_TX_STAMP, &tx->time.raw, sizeof(tx->time.raw));
 
@@ -2063,16 +2064,18 @@ static void dw1000_tx_complete(struct dw1000 *dw, struct sk_buff *skb)
  */
 static int dw1000_rx_prepare(struct dw1000 *dw)
 {
-	static const uint8_t hrbpt = DW1000_SYS_CTRL3_HRBPT;
-	static const uint8_t rxena = DW1000_SYS_CTRL1_RXENAB;
-	static const uint32_t clear = cpu_to_le32(DW1000_RX_STATE_CLEAR);
-	static const uint32_t mask1 = cpu_to_le32(DW1000_SYS_MASK_MACTIVE);
-	static const uint32_t mask0 = 0;
-
 	struct dw1000_rx *rx = &dw->rx;
+	struct dw1000_sar *sar = &dw->sar;
 
 	/* Initialise receive descriptor */
 	memset(rx, 0, sizeof(*rx));
+
+	/* Set contant values used in SPI transfer */
+	rx->hrbpt = DW1000_SYS_CTRL3_HRBPT;
+	rx->rxena = DW1000_SYS_CTRL1_RXENAB;
+	rx->mask0 = 0;
+	rx->mask1 = cpu_to_le32(DW1000_SYS_MASK_MACTIVE);
+	rx->clear = cpu_to_le32(DW1000_RX_STATE_CLEAR);
 
 	/* Prepare information SPI message */
 	spi_message_init_no_memset(&rx->info);
@@ -2099,13 +2102,13 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 	/* Include SAR ADC control only if enabled */
 	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
 		dw1000_init_write(&rx->info, &rx->sarc_a1, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_A, &sarc_a1, sizeof(sarc_a1));
+				  DW1000_RF_SENSOR_SARC_A, &sar->ctrl_a1, sizeof(sar->ctrl_a1));
 		dw1000_init_write(&rx->info, &rx->sarc_b1, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_B, &sarc_b1, sizeof(sarc_b1));
+				  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b1, sizeof(sar->ctrl_b1));
 		dw1000_init_write(&rx->info, &rx->sarc_b2, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_B, &sarc_b2, sizeof(sarc_b2));
-		dw1000_init_write(&rx->info, &rx->sarc_on, DW1000_TX_CAL,
-				  DW1000_TC_SARC, &sarc_on, sizeof(sarc_on));
+				  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b2, sizeof(sar->ctrl_b2));
+		dw1000_init_write(&rx->info, &rx->sarc_ena, DW1000_TX_CAL,
+				  DW1000_TC_SARC, &sar->ctrl_ena, sizeof(sar->ctrl_ena));
 	}
 
 	/* Prepare data SPI message */
@@ -2113,12 +2116,12 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 	dw1000_init_read(&rx->data, &rx->rx_buffer, DW1000_RX_BUFFER, 0,
 			 NULL, 0);
 	dw1000_init_write(&rx->data, &rx->sys_ctrl, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL3, &hrbpt, sizeof(hrbpt));
+			  DW1000_SYS_CTRL3, &rx->hrbpt, sizeof(rx->hrbpt));
 
 	/* Include SAR ADC control only if enabled */
 	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		dw1000_init_write(&rx->data, &rx->sarc_off, DW1000_TX_CAL,
-				  DW1000_TC_SARC, &sarc_off, sizeof(sarc_off));
+		dw1000_init_write(&rx->data, &rx->sarc_dis, DW1000_TX_CAL,
+				  DW1000_TC_SARC, &sar->ctrl_dis, sizeof(sar->ctrl_dis));
 		dw1000_init_read(&rx->data, &rx->sarl, DW1000_TX_CAL,
 				 DW1000_TC_SARL, &rx->adc.raw, sizeof(rx->adc.raw));
 	}
@@ -2126,15 +2129,15 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 	/* Prepare recovery SPI message */
 	spi_message_init_no_memset(&rx->rcvr);
 	dw1000_init_write(&rx->rcvr, &rx->rv_mask0, DW1000_SYS_MASK,
-			  0, &mask0, sizeof(mask0));
+			  0, &rx->mask0, sizeof(rx->mask0));
 	dw1000_init_write(&rx->rcvr, &rx->rv_status, DW1000_SYS_STATUS,
-			  0, &clear, sizeof(clear));
+			  0, &rx->clear, sizeof(rx->clear));
 	dw1000_init_write(&rx->rcvr, &rx->rv_mask1, DW1000_SYS_MASK,
-			  0, &mask1, sizeof(mask1));
+			  0, &rx->mask1, sizeof(rx->mask1));
 	dw1000_init_write(&rx->rcvr, &rx->rv_hrbpt, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL3, &hrbpt, sizeof(hrbpt));
+			  DW1000_SYS_CTRL3, &rx->hrbpt, sizeof(rx->hrbpt));
 	dw1000_init_write(&rx->rcvr, &rx->rv_rxenab, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL1, &rxena, sizeof(rxena));
+			  DW1000_SYS_CTRL1, &rx->rxena, sizeof(rx->rxena));
 
 	return 0;
 }

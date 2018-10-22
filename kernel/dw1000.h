@@ -759,16 +759,24 @@ struct dw1000_tx {
 	/* Socket buffer */
 	struct sk_buff *skb;
 
-	/* Length */
-	uint8_t len;
-	/* Transmit start check */
-	uint8_t check;
-	/* Voltage and Temperature */
-	union dw1000_sarl adc;
-	/* Timestamp */
-	union dw1000_timestamp time;
 	/* Timestamp info */
 	struct dw1000_tsinfo tsinfo;
+
+	/* TX/RX off command */
+	uint8_t trxoff;
+	/* TX start command */
+	uint8_t txstrt;
+	/* TX frame sent ack */
+	uint8_t txfrs;
+	/* Length */
+	uint8_t len;
+	/* TX start check */
+	uint8_t check;
+
+	/* Timestamp */
+	union dw1000_timestamp time;
+	/* Voltage and Temperature */
+	union dw1000_sarl adc;
 
 	/* Data SPI message */
 	struct spi_message data;
@@ -786,8 +794,8 @@ struct dw1000_tx {
 	struct dw1000_spi_transfers sarc_a1;
 	struct dw1000_spi_transfers sarc_b1;
 	struct dw1000_spi_transfers sarc_b2;
-	/* SARC on set */
-	struct dw1000_spi_transfers sarc_on;
+	/* SARC enable set */
+	struct dw1000_spi_transfers sarc_ena;
 	/* Data SPI message has completed */
 	bool data_complete;
 	/* Data SPI message retry count */
@@ -795,8 +803,8 @@ struct dw1000_tx {
 
 	/* Information SPI message */
 	struct spi_message info;
-	/* SARC off set */
-	struct dw1000_spi_transfers sarc_off;
+	/* SARC disable set */
+	struct dw1000_spi_transfers sarc_dis;
 	/* Voltage and temperature set */
 	struct dw1000_spi_transfers sarl;
 	/* IRQ acknowledgement SPI transfer set */
@@ -807,19 +815,31 @@ struct dw1000_tx {
 
 /* Receive descriptor */
 struct dw1000_rx {
-	/* Received Link Quality */
-	uint8_t lqi;
 	/* Data frame validity */
 	bool frame_valid;
 	/* Timestamp validity */
 	bool timestamp_valid;
 
+	/* Received Link Quality */
+	uint8_t lqi;
+
+	/* RX ENAble command */
+	uint8_t rxena;
+	/* Host side Rx Buffer Pointer Toggle */
+	uint8_t hrbpt;
 	/* RX status */
 	__le32 status;
 	/* Frame information */
 	__le32 finfo;
-	/* Voltage and Temperature */
-	union dw1000_sarl adc;
+	/* Overrun count */
+	__le16 evc_ovr;
+	/* Recovery event status clear */
+	__le32 clear;
+	/* Recovery event mask disable */
+	__le32 mask0;
+	/* Recovery event mask re-enable */
+	__le32 mask1;
+
 	/* Timestamp */
 	union dw1000_rx_time time;
 	/* Timestamp info */
@@ -829,8 +849,8 @@ struct dw1000_rx {
 	/* Time tracking */
 	union dw1000_rx_ttcko ttcko;
 	union dw1000_rx_ttcki ttcki;
-	/* Overrun count */
-	__le16 evc_ovr;
+	/* Voltage and Temperature */
+	union dw1000_sarl adc;
 
 	/* Information SPI message */
 	struct spi_message info;
@@ -851,8 +871,8 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers sarc_a1;
 	struct dw1000_spi_transfers sarc_b1;
 	struct dw1000_spi_transfers sarc_b2;
-	/* SARC on set */
-	struct dw1000_spi_transfers sarc_on;
+	/* SARC enable set */
+	struct dw1000_spi_transfers sarc_ena;
 
 	/* Data SPI message */
 	struct spi_message data;
@@ -860,8 +880,8 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers rx_buffer;
 	/* Host buffer toggle SPI transfer set */
 	struct dw1000_spi_transfers sys_ctrl;
-	/* SARC off set */
-	struct dw1000_spi_transfers sarc_off;
+	/* SARC disable set */
+	struct dw1000_spi_transfers sarc_dis;
 	/* Voltage and temperature set */
 	struct dw1000_spi_transfers sarl;
 
@@ -884,16 +904,22 @@ struct dw1000_sar {
 	/* Voltage and Temperature */
 	union dw1000_sarl adc;
 
+	/* Control constants */
+	uint8_t ctrl_a1;
+	uint8_t ctrl_b1;
+	uint8_t ctrl_b2;
+	uint8_t ctrl_ena;
+	uint8_t ctrl_dis;
+
 	/* SAR SPI message */
 	struct spi_message msg;
-
 	/* Undocumented SAR control set */
 	struct dw1000_spi_transfers sarc_a1;
 	struct dw1000_spi_transfers sarc_b1;
 	struct dw1000_spi_transfers sarc_b2;
-	/* SARC on/off set */
-	struct dw1000_spi_transfers sarc_on;
-	struct dw1000_spi_transfers sarc_off;
+	/* SARC enable/disable set */
+	struct dw1000_spi_transfers sarc_ena;
+	struct dw1000_spi_transfers sarc_dis;
 	/* Voltage and temperature set */
 	struct dw1000_spi_transfers sarl;
 };
