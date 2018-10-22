@@ -579,6 +579,14 @@ union dw1000_rx_ttcko {
  */
 #define DW1000_TIMESTAMP_REPETITION_THRESHOLD 0xffff
 
+/* Maximum number of transmit start retries
+ *
+ * The hardware occasionally decides to ignore the TXSTRT instruction
+ * for no discernible reason.  Work around this hardware bug by
+ * retrying the instruction several times if needed.
+ */
+#define DW1000_TX_MAX_RETRIES 5
+
 /* Pulse repetition frequencies */
 enum dw1000_prf {
 	DW1000_PRF_16M = 0x1,
@@ -764,14 +772,6 @@ struct dw1000_tx {
 	/* Timestamp SPI transfer set */
 	struct dw1000_spi_transfers tx_time;
 };
-
-/* Maximum number of transmit start retries
- *
- * The hardware occasionally decides to ignore the TXSTRT instruction
- * for no discernible reason.  Work around this hardware bug by
- * retrying the instruction several times if needed.
- */
-#define DW1000_TX_MAX_RETRIES 5
 
 /* Receive descriptor */
 struct dw1000_rx {
