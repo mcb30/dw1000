@@ -457,6 +457,53 @@ static int dw1000_regmap_init(struct dw1000 *dw)
 
 /******************************************************************************
  *
+ * SAR ADC access
+ *
+ */
+
+/**
+ * dw1000_sar_prepare() - Prepare SAR SPI message
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_sar_prepare(struct dw1000 *dw)
+{
+	static const uint8_t sarc_a1 = DW1000_RF_SENSOR_SARC_A1;
+	static const uint8_t sarc_b1 = DW1000_RF_SENSOR_SARC_B1;
+	static const uint8_t sarc_b2 = DW1000_RF_SENSOR_SARC_B2;
+	static const uint8_t sarc_on = DW1000_TC_SARC_CTRL;
+	static const uint8_t sarc_off = 0;
+
+	struct dw1000_sar *sar = &dw->sar;
+
+	/* Initialise SAR descriptor */
+	memset(sar, 0, sizeof(*sar));
+
+	/* Prepare SAR SPI message */
+	spi_message_init_no_memset(&sar->msg);
+	dw1000_init_write(&sar->msg, &sar->sarc_a1, DW1000_RF_CONF,
+			  DW1000_RF_SENSOR_SARC_A, &sarc_a1, sizeof(sarc_a1));
+	dw1000_init_write(&sar->msg, &sar->sarc_b1, DW1000_RF_CONF,
+			  DW1000_RF_SENSOR_SARC_B, &sarc_b1, sizeof(sarc_b1));
+	dw1000_init_write(&sar->msg, &sar->sarc_b2, DW1000_RF_CONF,
+			  DW1000_RF_SENSOR_SARC_B, &sarc_b2, sizeof(sarc_b2));
+	dw1000_init_write(&sar->msg, &sar->sarc_on, DW1000_TX_CAL,
+			  DW1000_TC_SARC, &sarc_on, sizeof(sarc_on));
+
+	/* Keep the ADC on for a few us */
+	sar->sarc_on.data.delay_usecs = DW1000_SAR_WAIT_US;
+
+	dw1000_init_write(&sar->msg, &sar->sarc_off, DW1000_TX_CAL,
+			  DW1000_TC_SARC, &sarc_off, sizeof(sarc_off));
+	dw1000_init_read(&sar->msg, &sar->sarl, DW1000_TX_CAL,
+			 DW1000_TC_SARL, &sar->adc.raw, sizeof(sar->adc.raw));
+
+	return 0;
+}
+
+/******************************************************************************
+ *
  * One-time programmable memory (OTP) access
  *
  */
@@ -2200,6 +2247,12 @@ static int dw1000_start(struct ieee802154_hw *hw)
 	int sys_status;
 	int rc;
 
+	/* Prepare sarc descriptor */
+	if ((rc = dw1000_sar_prepare(dw)) != 0) {
+		dev_err(dw->dev, "SAR preparation failed: %d\n", rc);
+		goto err_sar_prepare;
+	}
+
 	/* Prepare transmit descriptor */
 	if ((rc = dw1000_tx_prepare(dw)) != 0) {
 		dev_err(dw->dev, "TX preparation failed: %d\n", rc);
@@ -2243,6 +2296,7 @@ static int dw1000_start(struct ieee802154_hw *hw)
  err_sys_status:
  err_rx_prepare:
  err_tx_prepare:
+ err_sar_prepare:
 	return rc;
 }
 
@@ -2464,57 +2518,24 @@ static int dw1000_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 			     uint32_t attr, int channel, long *val)
 {
 	struct dw1000 *dw = dev_get_drvdata(dev);
-	static const uint8_t hack_a1 = DW1000_RF_SENSOR_HACK_A1;
-	static const uint8_t hack_b1 = DW1000_RF_SENSOR_HACK_B1;
-	static const uint8_t hack_b2 = DW1000_RF_SENSOR_HACK_B2;
-	static const uint8_t sarc_on = DW1000_TC_SARC_CTRL;
-	static const uint8_t sarc_off = 0;
-	struct {
-		struct spi_message msg;
-		struct dw1000_spi_transfers hack_a1;
-		struct dw1000_spi_transfers hack_b1;
-		struct dw1000_spi_transfers hack_b2;
-		struct dw1000_spi_transfers sarc_on;
-		struct dw1000_spi_transfers sarc_off;
-		struct dw1000_spi_transfers sarl;
-	} spi;
-	uint8_t sarl;
+	struct dw1000_sar *sar = &dw->sar;
 	int rc;
 
-	/* Construct SPI message */
-	memset(&spi, 0, sizeof(spi));
-	spi_message_init_no_memset(&spi.msg);
-	dw1000_init_write(&spi.msg, &spi.hack_a1, DW1000_RF_CONF,
-			  DW1000_RF_SENSOR_HACK_A, &hack_a1, sizeof(hack_a1));
-	dw1000_init_write(&spi.msg, &spi.hack_b1, DW1000_RF_CONF,
-			  DW1000_RF_SENSOR_HACK_B, &hack_b1, sizeof(hack_b1));
-	dw1000_init_write(&spi.msg, &spi.hack_b2, DW1000_RF_CONF,
-			  DW1000_RF_SENSOR_HACK_B, &hack_b2, sizeof(hack_b2));
-	dw1000_init_write(&spi.msg, &spi.sarc_on, DW1000_TX_CAL,
-			  DW1000_TC_SARC, &sarc_on, sizeof(sarc_on));
-	spi.sarc_on.data.delay_usecs = DW1000_SAR_WAIT_US;
-	dw1000_init_write(&spi.msg, &spi.sarc_off, DW1000_TX_CAL,
-			  DW1000_TC_SARC, &sarc_off, sizeof(sarc_off));
-	dw1000_init_read(&spi.msg, &spi.sarl, DW1000_TX_CAL,
-			 ((type == hwmon_in) ?
-			  DW1000_TC_SARL_LVBAT : DW1000_TC_SARL_LTEMP),
-			 &sarl, sizeof(sarl));
-
 	/* Send SPI message */
-	if ((rc = spi_sync(dw->spi, &spi.msg)) != 0)
+	if ((rc = spi_sync(dw->spi, &sar->msg)) != 0)
 		return rc;
 
 	/* Convert result */
 	switch (type) {
 	case hwmon_in:
-		*val = DW1000_SAR_VBAT_MVOLT(sarl, dw->vmeas_3v3);
+		*val = DW1000_SAR_VBAT_MVOLT(sar->adc.volt, dw->vmeas_3v3);
 		dev_dbg(dw->dev, "voltage %#x (%#x @ 3.3V) is %ldmV\n",
-			sarl, dw->vmeas_3v3, *val);
+			sar->adc.volt, dw->vmeas_3v3, *val);
 		break;
 	case hwmon_temp:
-		*val = DW1000_SAR_TEMP_MDEGC(sarl, dw->tmeas_23c);
+		*val = DW1000_SAR_TEMP_MDEGC(sar->adc.temp, dw->tmeas_23c);
 		dev_dbg(dw->dev, "temperature %#x (%#x @ 23degC) is %ldmdegC\n",
-			sarl, dw->tmeas_23c, *val);
+			sar->adc.temp, dw->tmeas_23c, *val);
 		break;
 	default:
 		return -EINVAL;

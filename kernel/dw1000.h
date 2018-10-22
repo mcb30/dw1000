@@ -155,6 +155,15 @@ union dw1000_rx_ttcko {
 	uint8_t raw[3];
 };
 
+/* ADC SARL data */
+union dw1000_sarl {
+	struct {
+		uint8_t volt;
+		uint8_t temp;
+	} __packed;
+	uint8_t raw[2];
+};
+
 /* Register files */
 #define DW1000_DEV_ID		0x00
 #define DW1000_DEV_ID_LEN	4
@@ -418,16 +427,17 @@ union dw1000_rx_ttcko {
 /* Analog RF configuration registers */
 #define DW1000_RF_RXCTRLH		0x0b
 #define DW1000_RF_TXCTRL		0x0c
-#define DW1000_RF_SENSOR_HACK_A		0x11
-#define DW1000_RF_SENSOR_HACK_A1		0x80
-#define DW1000_RF_SENSOR_HACK_B		0x12
-#define DW1000_RF_SENSOR_HACK_B1		0x0a
-#define DW1000_RF_SENSOR_HACK_B2		0x0f
+#define DW1000_RF_SENSOR_SARC_A		0x11
+#define DW1000_RF_SENSOR_SARC_A1		0x80
+#define DW1000_RF_SENSOR_SARC_B		0x12
+#define DW1000_RF_SENSOR_SARC_B1		0x0a
+#define DW1000_RF_SENSOR_SARC_B2		0x0f
 #define DW1000_RF_LDOTUNE		0x30
 
 /* Transmitter calibration registers */
 #define DW1000_TC_SARC			0x00
 #define DW1000_TC_SARC_CTRL			0x01
+#define DW1000_TC_SARL			0x03
 #define DW1000_TC_SARL_LVBAT		0x03
 #define DW1000_TC_SARL_LTEMP		0x04
 #define DW1000_TC_PGDELAY		0x0b
@@ -509,9 +519,6 @@ union dw1000_rx_ttcko {
 #define DW1000_LDELOAD_WAIT_MIN_US 150
 #define DW1000_LDELOAD_WAIT_MAX_US 500
 
-/* Delay required for SAR ADC read */
-#define DW1000_SAR_WAIT_US 10
-
 /* Cycle counter parameters
  *
  * The DW1000 uses a 40-bit counter running at a nominal 63.8976GHz
@@ -549,6 +556,9 @@ union dw1000_rx_ttcko {
 #define DW1000_EDV2_MIN 40
 #define DW1000_EDG1_MULT 3400
 #define DW1000_EDG1_SHIFT 10
+
+/* Delay required for SAR ADC read */
+#define DW1000_SAR_WAIT_US 10
 
 /* SAR ADC conversions */
 #define DW1000_SAR_VBAT_MVOLT(sar, sar_3v3) \
@@ -835,6 +845,25 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers rv_rxenab;
 };
 
+/* SAR descriptor */
+struct dw1000_sar {
+	/* Voltage and Temperature */
+	union dw1000_sarl adc;
+
+	/* SAR SPI message */
+	struct spi_message msg;
+
+	/* Undocumented SAR control set */
+	struct dw1000_spi_transfers sarc_a1;
+	struct dw1000_spi_transfers sarc_b1;
+	struct dw1000_spi_transfers sarc_b2;
+	/* SARC on/off set */
+	struct dw1000_spi_transfers sarc_on;
+	struct dw1000_spi_transfers sarc_off;
+	/* Voltage and temperature set */
+	struct dw1000_spi_transfers sarl;
+};
+
 /* PTP clock */
 struct dw1000_ptp {
 	/* Time counter access mutex */
@@ -947,6 +976,8 @@ struct dw1000 {
 	struct dw1000_tx tx;
 	/* Receive descriptor */
 	struct dw1000_rx rx;
+	/* SAR descriptor */
+	struct dw1000_sar sar;
 
 	/* PTP clock */
 	struct dw1000_ptp ptp;
