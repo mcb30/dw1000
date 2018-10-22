@@ -648,14 +648,14 @@ struct dw1000_rate_config {
 	unsigned int txpsr;
 	/* Digital receiver tuning register 0B value */
 	uint16_t drx_tune0b;
-	/* Digital receiver tuning register 1B value */
-	uint16_t drx_tune1b;
 	/* Digital receiver tuning register 2 value */
 	uint8_t drx_tune2[DW1000_PRF_COUNT][4];
 };
 
 /* Preamble symbol repetitions configuration */
 struct dw1000_txpsr_config {
+	/* Digital receiver tuning register 1B value */
+	uint16_t drx_tune1b;
 	/* Digital receiver tuning register 4H value */
 	uint16_t drx_tune4h;
 };

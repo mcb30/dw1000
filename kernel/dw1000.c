@@ -729,7 +729,6 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 		.tdsym_ns = 8205,
 		.txpsr = DW1000_TXPSR_4096,
 		.drx_tune0b = 0x000a,
-		.drx_tune1b = 0x0064,
 		.drx_tune2 = {
 			[DW1000_PRF_16M] = { 0x1d, 0x01, 0x1a, 0x37 },
 			[DW1000_PRF_64M] = { 0x96, 0x02, 0x3b, 0x37 },
@@ -739,7 +738,6 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 		.tdsym_ns = 1025,
 		.txpsr = DW1000_TXPSR_1024,
 		.drx_tune0b = 0x0001,
-		.drx_tune1b = 0x0020,
 		.drx_tune2 = {
 			[DW1000_PRF_16M] = { 0x9a, 0x00, 0x1a, 0x35 },
 			[DW1000_PRF_64M] = { 0x5e, 0x01, 0x3b, 0x35 },
@@ -749,7 +747,6 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 		.tdsym_ns = 128,
 		.txpsr = DW1000_TXPSR_64,
 		.drx_tune0b = 0x0001,
-		.drx_tune1b = 0x0010,
 		.drx_tune2 = {
 			[DW1000_PRF_16M] = { 0x2d, 0x00, 0x1a, 0x31 },
 			[DW1000_PRF_64M] = { 0x6b, 0x00, 0x3b, 0x31 },
@@ -759,13 +756,13 @@ static const struct dw1000_rate_config dw1000_rate_configs[] = {
 
 /* Preamble symbol repetitions configurations */
 static const struct dw1000_txpsr_config dw1000_txpsr_configs[] = {
-	[DW1000_TXPSR_64]   = { .drx_tune4h = 0x0010 },
-	[DW1000_TXPSR_128]  = { .drx_tune4h = 0x0028 },
-	[DW1000_TXPSR_256]  = { .drx_tune4h = 0x0028 },
-	[DW1000_TXPSR_512]  = { .drx_tune4h = 0x0028 },
-	[DW1000_TXPSR_1024] = { .drx_tune4h = 0x0028 },
-	[DW1000_TXPSR_2048] = { .drx_tune4h = 0x0028 },
-	[DW1000_TXPSR_4096] = { .drx_tune4h = 0x0028 },
+	[DW1000_TXPSR_64]   = { .drx_tune1b = 0x0010, .drx_tune4h = 0x0010 },
+	[DW1000_TXPSR_128]  = { .drx_tune1b = 0x0020, .drx_tune4h = 0x0028 },
+	[DW1000_TXPSR_256]  = { .drx_tune1b = 0x0020, .drx_tune4h = 0x0028 },
+	[DW1000_TXPSR_512]  = { .drx_tune1b = 0x0020, .drx_tune4h = 0x0028 },
+	[DW1000_TXPSR_1024] = { .drx_tune1b = 0x0020, .drx_tune4h = 0x0028 },
+	[DW1000_TXPSR_2048] = { .drx_tune1b = 0x0064, .drx_tune4h = 0x0028 },
+	[DW1000_TXPSR_4096] = { .drx_tune1b = 0x0064, .drx_tune4h = 0x0028 },
 };
 
 /* Fixed configurations */
@@ -979,9 +976,9 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 				       prf_cfg->drx_tune1a)) != 0)
 			return rc;
 	}
-	if (changed & DW1000_CONFIGURE_RATE) {
+	if (changed & DW1000_CONFIGURE_TXPSR) {
 		if ((rc = regmap_write(dw->drx_conf.regs, DW1000_DRX_TUNE1B,
-				       rate_cfg->drx_tune1b)) != 0)
+				       txpsr_cfg->drx_tune1b)) != 0)
 			return rc;
 	}
 	if (changed & (DW1000_CONFIGURE_PRF | DW1000_CONFIGURE_RATE)) {
