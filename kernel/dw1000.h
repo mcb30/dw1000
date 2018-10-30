@@ -742,6 +742,10 @@ struct dw1000_tsinfo {
 	uint32_t ttcko;
 	/* Time tracking interval */
 	uint32_t ttcki;
+	/* Temperature */
+	uint16_t temp;
+	/* Voltage */
+	uint16_t volt;
 };
 
 /* Transmit descriptor */
@@ -753,6 +757,8 @@ struct dw1000_tx {
 	uint8_t len;
 	/* Transmit start check */
 	uint8_t check;
+	/* Voltage and Temperature */
+	union dw1000_sarl adc;
 	/* Timestamp */
 	union dw1000_timestamp time;
 	/* Timestamp info */
@@ -770,6 +776,12 @@ struct dw1000_tx {
 	struct dw1000_spi_transfers sys_ctrl_txstrt;
 	/* TX start check SPI transfer set */
 	struct dw1000_spi_transfers sys_ctrl_check;
+	/* Undocumented SAR control set */
+	struct dw1000_spi_transfers sarc_a1;
+	struct dw1000_spi_transfers sarc_b1;
+	struct dw1000_spi_transfers sarc_b2;
+	/* SARC on set */
+	struct dw1000_spi_transfers sarc_on;
 	/* Data SPI message has completed */
 	bool data_complete;
 	/* Data SPI message retry count */
@@ -777,6 +789,10 @@ struct dw1000_tx {
 
 	/* Information SPI message */
 	struct spi_message info;
+	/* SARC off set */
+	struct dw1000_spi_transfers sarc_off;
+	/* Voltage and temperature set */
+	struct dw1000_spi_transfers sarl;
 	/* IRQ acknowledgement SPI transfer set */
 	struct dw1000_spi_transfers sys_status;
 	/* Timestamp SPI transfer set */
@@ -796,6 +812,8 @@ struct dw1000_rx {
 	__le32 status;
 	/* Frame information */
 	__le32 finfo;
+	/* Voltage and Temperature */
+	union dw1000_sarl adc;
 	/* Timestamp */
 	union dw1000_rx_time time;
 	/* Timestamp info */
@@ -823,6 +841,12 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers sys_status;
 	/* Digital diagnostics transfer set */
 	struct dw1000_spi_transfers dig_diag;
+	/* Undocumented SAR control set */
+	struct dw1000_spi_transfers sarc_a1;
+	struct dw1000_spi_transfers sarc_b1;
+	struct dw1000_spi_transfers sarc_b2;
+	/* SARC on set */
+	struct dw1000_spi_transfers sarc_on;
 
 	/* Data SPI message */
 	struct spi_message data;
@@ -830,6 +854,10 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers rx_buffer;
 	/* Host buffer toggle SPI transfer set */
 	struct dw1000_spi_transfers sys_ctrl;
+	/* SARC off set */
+	struct dw1000_spi_transfers sarc_off;
+	/* Voltage and temperature set */
+	struct dw1000_spi_transfers sarl;
 
 	/* Recovery SPI message */
 	struct spi_message rcvr;

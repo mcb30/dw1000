@@ -35,6 +35,9 @@
 /* Enable GPIO controlled LEDs */
 #define DW1000_GPIO_LEDS
 
+/* Enable DW1000 voltage sanity check */
+#define DW1000_VOLTAGE_CHECK
+
 
 /******************************************************************************
  *
@@ -461,6 +464,12 @@ static int dw1000_regmap_init(struct dw1000 *dw)
  *
  */
 
+static const uint8_t sarc_a1 = DW1000_RF_SENSOR_SARC_A1;
+static const uint8_t sarc_b1 = DW1000_RF_SENSOR_SARC_B1;
+static const uint8_t sarc_b2 = DW1000_RF_SENSOR_SARC_B2;
+static const uint8_t sarc_on = DW1000_TC_SARC_CTRL;
+static const uint8_t sarc_off = 0;
+
 /**
  * dw1000_sar_prepare() - Prepare SAR SPI message
  *
@@ -469,12 +478,6 @@ static int dw1000_regmap_init(struct dw1000 *dw)
  */
 static int dw1000_sar_prepare(struct dw1000 *dw)
 {
-	static const uint8_t sarc_a1 = DW1000_RF_SENSOR_SARC_A1;
-	static const uint8_t sarc_b1 = DW1000_RF_SENSOR_SARC_B1;
-	static const uint8_t sarc_b2 = DW1000_RF_SENSOR_SARC_B2;
-	static const uint8_t sarc_on = DW1000_TC_SARC_CTRL;
-	static const uint8_t sarc_off = 0;
-
 	struct dw1000_sar *sar = &dw->sar;
 
 	/* Initialise SAR descriptor */
@@ -1687,6 +1690,14 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 	tsi->ttcko = ttcko;
 	tsi->ttcki = ttcki;
 
+	/* Assign ADC SAR results */
+	tsi->temp = DW1000_SAR_TEMP_MDEGC(rx->adc.temp, dw->tmeas_23c) / 10;
+	tsi->volt = DW1000_SAR_VBAT_MVOLT(rx->adc.volt, dw->vmeas_3v3);
+#ifdef DW1000_VOLTAGE_CHECK
+	if (tsi->volt < 3000)
+		dev_warn_ratelimited(dw->dev, "[Rx] low voltage: %dmV (0x%02x)\n",
+				     tsi->volt, rx->adc.volt);
+#endif
 	/* Sanity check */
 	if (noise == 0 || power == 0 || rxpacc == 0 || ampl1 == 0) {
 		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
@@ -1787,6 +1798,14 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
 			  DW1000_SYS_CTRL0, &trxoff, sizeof(trxoff));
 	dw1000_init_write(&tx->data, &tx->tx_fctrl, DW1000_TX_FCTRL,
 			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
+	dw1000_init_write(&tx->data, &tx->sarc_a1, DW1000_RF_CONF,
+			  DW1000_RF_SENSOR_SARC_A, &sarc_a1, sizeof(sarc_a1));
+	dw1000_init_write(&tx->data, &tx->sarc_b1, DW1000_RF_CONF,
+			  DW1000_RF_SENSOR_SARC_B, &sarc_b1, sizeof(sarc_b1));
+	dw1000_init_write(&tx->data, &tx->sarc_b2, DW1000_RF_CONF,
+			  DW1000_RF_SENSOR_SARC_B, &sarc_b2, sizeof(sarc_b2));
+	dw1000_init_write(&tx->data, &tx->sarc_on, DW1000_TX_CAL,
+			  DW1000_TC_SARC, &sarc_on, sizeof(sarc_on));
 	dw1000_init_write(&tx->data, &tx->sys_ctrl_txstrt, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL0, &txstrt, sizeof(txstrt));
 	dw1000_init_read(&tx->data, &tx->sys_ctrl_check, DW1000_SYS_CTRL,
@@ -1794,6 +1813,10 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
 
 	/* Prepare information SPI message */
 	spi_message_init_no_memset(&tx->info);
+	dw1000_init_write(&tx->info, &tx->sarc_off, DW1000_TX_CAL,
+			  DW1000_TC_SARC, &sarc_off, sizeof(sarc_off));
+	dw1000_init_read(&tx->info, &tx->sarl, DW1000_TX_CAL,
+			 DW1000_TC_SARL, &tx->adc.raw, sizeof(tx->adc.raw));
 	dw1000_init_write(&tx->info, &tx->sys_status, DW1000_SYS_STATUS,
 			  DW1000_SYS_STATUS0, &txfrs, sizeof(txfrs));
 	dw1000_init_read(&tx->info, &tx->tx_time, DW1000_TX_TIME,
@@ -1918,6 +1941,7 @@ static void dw1000_tx_data_complete(void *context)
 static void dw1000_tx_irq(struct dw1000 *dw)
 {
 	struct dw1000_tx *tx = &dw->tx;
+	struct dw1000_tsinfo *tsi = &tx->tsinfo;
 	struct skb_shared_hwtstamps hwtstamps;
 	struct sk_buff *skb;
 	unsigned long flags;
@@ -1943,13 +1967,21 @@ static void dw1000_tx_irq(struct dw1000 *dw)
 		return;
 	}
 
+	/* Assign ADC SAR results */
+	tsi->temp = DW1000_SAR_TEMP_MDEGC(tx->adc.temp, dw->tmeas_23c) / 10;
+	tsi->volt = DW1000_SAR_VBAT_MVOLT(tx->adc.volt, dw->vmeas_3v3);
+#ifdef DW1000_VOLTAGE_CHECK
+	if (tsi->volt < 3000)
+		dev_warn_ratelimited(dw->dev, "[Tx] low voltage: %dmV (0x%02x)\n",
+				     tsi->volt, tx->adc.volt);
+#endif
 	/* Record hardware timestamp, if applicable */
 	spin_lock_irqsave(&dw->tx_lock, flags);
 	skb = tx->skb;
 	tx->skb = NULL;
 	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_IN_PROGRESS)) {
 		dw1000_timestamp(dw, &tx->time, &hwtstamps);
-		dw1000_tsinfo(dw, &tx->time, &tx->tsinfo, &hwtstamps);
+		dw1000_tsinfo(dw, &tx->time, tsi, &hwtstamps);
 		skb_tstamp_tx(skb, &hwtstamps);
 	}
 	spin_unlock_irqrestore(&dw->tx_lock, flags);
@@ -2020,6 +2052,14 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 			 DW1000_EVC_OVR, &rx->evc_ovr, sizeof(rx->evc_ovr));
 	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS, 0,
 			 &rx->status, sizeof(rx->status));
+	dw1000_init_write(&rx->info, &rx->sarc_a1, DW1000_RF_CONF,
+			  DW1000_RF_SENSOR_SARC_A, &sarc_a1, sizeof(sarc_a1));
+	dw1000_init_write(&rx->info, &rx->sarc_b1, DW1000_RF_CONF,
+			  DW1000_RF_SENSOR_SARC_B, &sarc_b1, sizeof(sarc_b1));
+	dw1000_init_write(&rx->info, &rx->sarc_b2, DW1000_RF_CONF,
+			  DW1000_RF_SENSOR_SARC_B, &sarc_b2, sizeof(sarc_b2));
+	dw1000_init_write(&rx->info, &rx->sarc_on, DW1000_TX_CAL,
+			  DW1000_TC_SARC, &sarc_on, sizeof(sarc_on));
 
 	/* Prepare data SPI message */
 	spi_message_init_no_memset(&rx->data);
@@ -2027,6 +2067,10 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 			 NULL, 0);
 	dw1000_init_write(&rx->data, &rx->sys_ctrl, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL3, &hrbpt, sizeof(hrbpt));
+	dw1000_init_write(&rx->data, &rx->sarc_off, DW1000_TX_CAL,
+			  DW1000_TC_SARC, &sarc_off, sizeof(sarc_off));
+	dw1000_init_read(&rx->data, &rx->sarl, DW1000_TX_CAL,
+			 DW1000_TC_SARL, &rx->adc.raw, sizeof(rx->adc.raw));
 
 	/* Prepare recovery SPI message */
 	spi_message_init_no_memset(&rx->rcvr);
