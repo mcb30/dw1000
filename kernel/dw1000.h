@@ -742,9 +742,15 @@ struct dw1000_tx {
 	/* Socket buffer */
 	struct sk_buff *skb;
 
+	/* TX/RX off command */
+	uint8_t trxoff;
+	/* TX start command */
+	uint8_t txstrt;
+	/* TX frame sent acknowledgement command */
+	uint8_t txfrs;
 	/* Length */
 	uint8_t len;
-	/* Transmit start check */
+	/* TX start check */
 	uint8_t check;
 	/* Timestamp */
 	union dw1000_timestamp time;
@@ -793,6 +799,10 @@ struct dw1000_rx {
 	/* Timestamp validity */
 	bool timestamp_valid;
 
+	/* Host side RX buffer pointer toggle command */
+	uint8_t hrbpt;
+	/* RX enable command */
+	uint8_t rxena;
 	/* RX status */
 	__le32 status;
 	/* Frame information */
@@ -808,6 +818,12 @@ struct dw1000_rx {
 	union dw1000_rx_ttcki ttcki;
 	/* Overrun count */
 	__le16 evc_ovr;
+	/* Recovery event mask disable */
+	__le32 mask0;
+	/* Recovery event status clear */
+	__le32 clear;
+	/* Recovery event mask re-enable */
+	__le32 mask1;
 
 	/* Information SPI message */
 	struct spi_message info;

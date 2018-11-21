@@ -1732,17 +1732,14 @@ static void dw1000_tx_complete(struct dw1000 *dw, struct sk_buff *skb);
  */
 static int dw1000_tx_prepare(struct dw1000 *dw)
 {
-	static const uint8_t trxoff = DW1000_SYS_CTRL0_TRXOFF;
-	static const uint8_t txstrt = (DW1000_SYS_CTRL0_TXSTRT |
-				       DW1000_SYS_CTRL0_WAIT4RESP);
-	static const uint8_t txfrs = (DW1000_SYS_STATUS0_TXFRB |
-				      DW1000_SYS_STATUS0_TXPRS |
-				      DW1000_SYS_STATUS0_TXPHS |
-				      DW1000_SYS_STATUS0_TXFRS);
 	struct dw1000_tx *tx = &dw->tx;
 
 	/* Initialise transmit descriptor */
 	memset(tx, 0, sizeof(*tx));
+	tx->trxoff = DW1000_SYS_CTRL0_TRXOFF;
+	tx->txstrt = (DW1000_SYS_CTRL0_TXSTRT | DW1000_SYS_CTRL0_WAIT4RESP);
+	tx->txfrs = (DW1000_SYS_STATUS0_TXFRB | DW1000_SYS_STATUS0_TXPRS |
+		     DW1000_SYS_STATUS0_TXPHS | DW1000_SYS_STATUS0_TXFRS);
 
 	/* Prepare data SPI message */
 	spi_message_init_no_memset(&tx->data);
@@ -1751,18 +1748,18 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
 	dw1000_init_write(&tx->data, &tx->tx_buffer, DW1000_TX_BUFFER, 0,
 			  NULL, 0);
 	dw1000_init_write(&tx->data, &tx->sys_ctrl_trxoff, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL0, &trxoff, sizeof(trxoff));
+			  DW1000_SYS_CTRL0, &tx->trxoff, sizeof(tx->trxoff));
 	dw1000_init_write(&tx->data, &tx->tx_fctrl, DW1000_TX_FCTRL,
 			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
 	dw1000_init_write(&tx->data, &tx->sys_ctrl_txstrt, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL0, &txstrt, sizeof(txstrt));
+			  DW1000_SYS_CTRL0, &tx->txstrt, sizeof(tx->txstrt));
 	dw1000_init_read(&tx->data, &tx->sys_ctrl_check, DW1000_SYS_CTRL,
 			 DW1000_SYS_CTRL0, &tx->check, sizeof(tx->check));
 
 	/* Prepare information SPI message */
 	spi_message_init_no_memset(&tx->info);
 	dw1000_init_write(&tx->info, &tx->sys_status, DW1000_SYS_STATUS,
-			  DW1000_SYS_STATUS0, &txfrs, sizeof(txfrs));
+			  DW1000_SYS_STATUS0, &tx->txfrs, sizeof(tx->txfrs));
 	dw1000_init_read(&tx->info, &tx->tx_time, DW1000_TX_TIME,
 			 DW1000_TX_STAMP, &tx->time.raw, sizeof(tx->time.raw));
 
@@ -1960,16 +1957,15 @@ static void dw1000_tx_complete(struct dw1000 *dw, struct sk_buff *skb)
  */
 static int dw1000_rx_prepare(struct dw1000 *dw)
 {
-	static const uint8_t hrbpt = DW1000_SYS_CTRL3_HRBPT;
-	static const uint8_t rxena = DW1000_SYS_CTRL1_RXENAB;
-	static const uint32_t clear = cpu_to_le32(DW1000_RX_STATE_CLEAR);
-	static const uint32_t mask1 = cpu_to_le32(DW1000_SYS_MASK_MACTIVE);
-	static const uint32_t mask0 = 0;
-
 	struct dw1000_rx *rx = &dw->rx;
 
 	/* Initialise receive descriptor */
 	memset(rx, 0, sizeof(*rx));
+	rx->hrbpt = DW1000_SYS_CTRL3_HRBPT;
+	rx->rxena = DW1000_SYS_CTRL1_RXENAB;
+	rx->mask0 = 0;
+	rx->clear = cpu_to_le32(DW1000_RX_STATE_CLEAR);
+	rx->mask1 = cpu_to_le32(DW1000_SYS_MASK_MACTIVE);
 
 	/* Prepare information SPI message */
 	spi_message_init_no_memset(&rx->info);
@@ -1993,20 +1989,20 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 	dw1000_init_read(&rx->data, &rx->rx_buffer, DW1000_RX_BUFFER, 0,
 			 NULL, 0);
 	dw1000_init_write(&rx->data, &rx->sys_ctrl, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL3, &hrbpt, sizeof(hrbpt));
+			  DW1000_SYS_CTRL3, &rx->hrbpt, sizeof(rx->hrbpt));
 
 	/* Prepare recovery SPI message */
 	spi_message_init_no_memset(&rx->rcvr);
 	dw1000_init_write(&rx->rcvr, &rx->rv_mask0, DW1000_SYS_MASK,
-			  0, &mask0, sizeof(mask0));
+			  0, &rx->mask0, sizeof(rx->mask0));
 	dw1000_init_write(&rx->rcvr, &rx->rv_status, DW1000_SYS_STATUS,
-			  0, &clear, sizeof(clear));
+			  0, &rx->clear, sizeof(rx->clear));
 	dw1000_init_write(&rx->rcvr, &rx->rv_mask1, DW1000_SYS_MASK,
-			  0, &mask1, sizeof(mask1));
+			  0, &rx->mask1, sizeof(rx->mask1));
 	dw1000_init_write(&rx->rcvr, &rx->rv_hrbpt, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL3, &hrbpt, sizeof(hrbpt));
+			  DW1000_SYS_CTRL3, &rx->hrbpt, sizeof(rx->hrbpt));
 	dw1000_init_write(&rx->rcvr, &rx->rv_rxenab, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL1, &rxena, sizeof(rxena));
+			  DW1000_SYS_CTRL1, &rx->rxena, sizeof(rx->rxena));
 
 	return 0;
 }
@@ -2478,11 +2474,11 @@ static int dw1000_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 			     uint32_t attr, int channel, long *val)
 {
 	struct dw1000 *dw = dev_get_drvdata(dev);
-	static const uint8_t hack_a1 = DW1000_RF_SENSOR_HACK_A1;
-	static const uint8_t hack_b1 = DW1000_RF_SENSOR_HACK_B1;
-	static const uint8_t hack_b2 = DW1000_RF_SENSOR_HACK_B2;
-	static const uint8_t sarc_on = DW1000_TC_SARC_CTRL;
-	static const uint8_t sarc_off = 0;
+	uint8_t hack_a1 = DW1000_RF_SENSOR_HACK_A1;
+	uint8_t hack_b1 = DW1000_RF_SENSOR_HACK_B1;
+	uint8_t hack_b2 = DW1000_RF_SENSOR_HACK_B2;
+	uint8_t sarc_on = DW1000_TC_SARC_CTRL;
+	uint8_t sarc_off = 0;
 	struct {
 		struct spi_message msg;
 		struct dw1000_spi_transfers hack_a1;
