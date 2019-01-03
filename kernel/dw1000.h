@@ -33,6 +33,12 @@
 #include "timehires.h"
 #include "kcompat.h"
 
+/* Timestamp information flags */
+#define DW1000_TSINFO_TIME	BIT(0)
+#define DW1000_TSINFO_RXQC	BIT(1)
+#define DW1000_TSINFO_TTCK	BIT(2)
+#define DW1000_TSINFO_SADC	BIT(3)
+
 /* DW1000 module power on delay (ms) */
 #define DW1000_POWER_ON_DELAY 100
 
