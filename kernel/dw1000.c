@@ -1165,6 +1165,9 @@ static int dw1000_configure_channel(struct dw1000 *dw, unsigned int channel)
 	/* Record channel */
 	dw->channel = channel;
 
+	/* Set channel also in the 802.15.4 stack */
+	dw->hw->phy->current_channel = channel;
+
 	/* Reconfigure channel */
 	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_CHANNEL)) != 0)
 		return rc;
