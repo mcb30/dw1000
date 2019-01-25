@@ -38,6 +38,9 @@
 /* Enable DW1000 voltage sanity check */
 #define DW1000_VOLTAGE_CHECK
 
+/* Enable DW1000 sync lost warnings */
+#undef DW1000_SYNC_LOST_WARN
+
 
 /******************************************************************************
  *
@@ -2197,8 +2200,10 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 
 	/* RX out-of-sync check */
 	if (unlikely(!DW1000_HSRPB_SYNC(status))) {
+#ifdef DW1000_SYNC_LOST_WARN
 		dev_warn_ratelimited(dw->dev, "RX sync lost after %d frames; "
 				    "recovering\n", dw->rx_sync_cnt);
+#endif
 		goto err_recover2;
 	}
 
