@@ -24,6 +24,9 @@ program :
 	$(EEPPROG) pitail.eep
 	@echo "Programming done."
 
+%.dtso : %.dtbo
+	$(DTC) -@ -I dtb -O dts -o $@ $<
+
 %.dtbo : pitail.dts Makefile
 	$(CPP) -nostdinc -undef -x assembler-with-cpp \
 		-DEUI64=0x$(firstword $(EUI64) $*)  -DSPIMAX=$(SPIMAX) \
@@ -42,5 +45,5 @@ $(EEPMAKE) $(EEPDUMP) :
 	$(MAKE) -C $(EEPROMUTILS)
 
 clean :
-	$(RM) *.dtbo *.eep *.dump
+	$(RM) *.dtso *.dtbo *.eep *.dump
 	$(MAKE) -C $(EEPROMUTILS) clean

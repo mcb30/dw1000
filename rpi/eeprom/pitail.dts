@@ -72,8 +72,8 @@
 	fragment@3 {
 		target = <&spi0>;
 		__overlay__ {
-			#address-cells = <0x1>;
-			#size-cells = <0x0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
 			dw1000: dw1000@0 {
 				compatible = "decawave,dw1000";
 				reg = <0>;
@@ -87,7 +87,30 @@
 				decawave,eui64 = /bits/ 64 <EUI64>;
 				decawave,antd = <ANTD16 ANTD64>;
 				decawave,xtalt = <XTALT>;
+				decawave,default = "Ch7-64";
+				decawave,calib {
+					calib@0 {
+						id = "Ch7-64";
+						ch = <7>;
+						prf = <64>;
+						antd = <ANTD64>;
+						power = <0x5171b1d1>;
+					};
+					calib@1 {
+						id = "Ch7-16";
+						ch = <7>;
+						prf = <16>;
+						antd = <ANTD16>;
+						power = <0x32527292>;
+					};
+				};
 			};
 		};
+	};
+
+	/* Define Device Tree parameters */
+	__overrides__ {
+		dw1000_eui = <&dw1000>,"decawave,eui64#0";
+		dw1000_profile = <&dw1000>,"decawave,default";
 	};
 };

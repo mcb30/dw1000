@@ -39,6 +39,9 @@
 #define DW1000_TSINFO_TTCK	BIT(2)
 #define DW1000_TSINFO_SADC	BIT(3)
 
+/* Maximum number of calibrations profiles */
+#define DW1000_MAX_CALIBS 24
+
 /* DW1000 module power on delay (ms) */
 #define DW1000_POWER_ON_DELAY 100
 
@@ -936,6 +939,23 @@ struct dw1000_ptp {
 	struct hires_counter tc;
 };
 
+/* Calibration profile name length */
+#define DW1000_CALIB_ID_LEN 16
+
+/* Calibration profile */
+struct dw1000_calib {
+	/* Name */
+	char id[DW1000_CALIB_ID_LEN];
+	/* Channel */
+	uint8_t ch;
+	/* PRF */
+	uint8_t prf;
+	/* ANTD */
+	uint16_t antd;
+	/* Tx Power */
+	uint32_t power;
+};
+
 /* DW1000 device */
 struct dw1000 {
 	/* SPI device */
@@ -994,6 +1014,9 @@ struct dw1000 {
 	/* One-time programmable memory */
 	struct regmap *otp;
 
+	/* Calibration profiles */
+	struct dw1000_calib calib[DW1000_MAX_CALIBS];
+
 	/* Calibrated voltage measurement at 3.3V */
 	uint8_t vmeas_3v3;
 	/* Calibrated temperature measurement at 23 degC */
@@ -1017,6 +1040,7 @@ struct dw1000 {
 	enum dw1000_txpsr txpsr;
 	/* Smart power control enabled */
 	bool smart_power;
+
 	/* Signal to Noise Ratio indicator threshold */
 	uint16_t snr_threshold;
 	/* First Path Energy indicator threshold */
