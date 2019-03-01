@@ -36,7 +36,7 @@
 #define DW1000_GPIO_LEDS
 
 /* Enable DW1000 voltage sanity check */
-#define DW1000_VOLTAGE_CHECK
+#undef DW1000_VOLTAGE_CHECK
 
 /* Enable DW1000 sync lost warnings */
 #undef DW1000_SYNC_LOST_WARN
@@ -1373,7 +1373,7 @@ static int dw1000_configure_profile(struct dw1000 *dw, const char *profile)
 		return -EINVAL;
 	}
 
-	dev_dbg(dw->dev, "loading calibration profile \"%s\"\n", profile);
+	dev_info(dw->dev, "loading calibration profile \"%s\"\n", profile);
 
 	/* Enabled if tx power value is meaningful for smart power */
 	smart_power = !!(calib->power & 0xff000000);
@@ -1719,14 +1719,14 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 	/* Check it is really a new value */
 	if (unlikely(((cc - dw->rx_timestamp[hsrbp]) & DW1000_TIMESTAMP_MASK)
 		     < DW1000_TIMESTAMP_REPETITION_THRESHOLD)) {
-		dev_warn_ratelimited(dw->dev, "Frame repetition #0 detected\n");
+		dev_err_ratelimited(dw->dev, "frame repetition #0 detected\n");
 		rx->timestamp_valid = false;
 		rx->frame_valid = false;
 		goto invalid;
 	}
 	if (unlikely(((cc - dw->rx_timestamp[hsrbp^1]) & DW1000_TIMESTAMP_MASK)
 		     < DW1000_TIMESTAMP_REPETITION_THRESHOLD)) {
-		dev_err_ratelimited(dw->dev, "Frame repetition #1 detected\n");
+		dev_err_ratelimited(dw->dev, "frame repetition #1 detected\n");
 		rx->timestamp_valid = false;
 		rx->frame_valid = false;
 		goto invalid;
@@ -2581,7 +2581,7 @@ static int dw1000_set_hw_addr_filt(struct ieee802154_hw *hw,
 		if ((rc = regmap_raw_write(dw->eui.regs, 0, &filt->ieee_addr,
 					   sizeof(filt->ieee_addr))) != 0)
 			return rc;
-		dev_dbg(dw->dev, "set EUI64 %016llx\n",
+		dev_dbg(dw->dev, "set EUI-64 %016llx\n",
 			le64_to_cpu(filt->ieee_addr));
 	}
 
@@ -3276,9 +3276,9 @@ static int dw1000_load_ldotune(struct dw1000 *dw)
 
 	/* Apply LDOTUNE calibration value, if applicable */
 	if (ldotune.raw[0]) {
-		dev_info(dw->dev, "set LDOTUNE %02x:%02x:%02x:%02x:%02x\n",
-			 ldotune.raw[4], ldotune.raw[3], ldotune.raw[2],
-			 ldotune.raw[1], ldotune.raw[0]);
+		dev_dbg(dw->dev, "set ldotune %02x:%02x:%02x:%02x:%02x\n",
+			ldotune.raw[4], ldotune.raw[3], ldotune.raw[2],
+			ldotune.raw[1], ldotune.raw[0]);
 		if ((rc = regmap_raw_write(dw->rf_conf.regs, DW1000_RF_LDOTUNE,
 					   &ldotune.raw,
 					   sizeof(ldotune.raw))) != 0)
@@ -3524,7 +3524,7 @@ static int dw1000_init(struct dw1000 *dw)
 	if ((rc = regmap_read(dw->dev_id.regs, DW1000_MODELVERREV,
 			      &modelverrev)) != 0)
 		return rc;
-	dev_info(dw->dev, "found model %d.%d.%d\n",
+	dev_info(dw->dev, "DW1000 revision %d.%d.%d detected\n",
 		 DW1000_MODELVERREV_MODEL(modelverrev),
 		 DW1000_MODELVERREV_VER(modelverrev),
 		 DW1000_MODELVERREV_REV(modelverrev));
@@ -3742,7 +3742,7 @@ static int dw1000_probe(struct spi_device *spi)
 
 	/* Add attribute group */
 	if ((rc = sysfs_create_group(&dw->dev->kobj, &dw1000_attr_group)) != 0){
-		dev_err(dw->dev, "could not create attributes: %d\n", rc);
+		dev_err(dw->dev, "could not create sysfs attributes: %d\n", rc);
 		goto err_create_group;
 	}
 
@@ -3779,7 +3779,7 @@ static int dw1000_probe(struct spi_device *spi)
 
 	/* Register IEEE 802.15.4 device */
 	if ((rc = ieee802154_register_hw(hw)) != 0) {
-		dev_err(dw->dev, "could not register: %d\n", rc);
+		dev_err(dw->dev, "could not register IEEE 802.15.4 device: %d\n", rc);
 		goto err_register_hw;
 	}
 
