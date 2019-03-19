@@ -771,6 +771,8 @@ struct dw1000_tx {
 	uint8_t txstrt;
 	/* TX frame sent ack */
 	uint8_t txfrs;
+	/* RX ENAble command */
+	uint8_t rxena;
 	/* Length */
 	uint8_t len;
 	/* TX start check */
@@ -814,6 +816,8 @@ struct dw1000_tx {
 	struct dw1000_spi_transfers sys_status;
 	/* Timestamp SPI transfer set */
 	struct dw1000_spi_transfers tx_time;
+	/* RX Enable transfer set */
+	struct dw1000_spi_transfers rx_enab;
 };
 
 /* Receive descriptor */
