@@ -1311,11 +1311,18 @@ static int dw1000_configure_tx_power(struct dw1000 *dw, uint32_t power)
 {
 	int rc;
 
-	/* Record power level */
-	dw->txpwr[0] = (power >>  0) & 0xff;
-	dw->txpwr[1] = (power >>  8) & 0xff;
-	dw->txpwr[2] = (power >> 16) & 0xff;
-	dw->txpwr[3] = (power >> 24) & 0xff;
+	/* Four byte or one byte power level */
+	if (power & 0xffffff00) {
+		dw->txpwr[0] = (power >>  0) & 0xff;
+		dw->txpwr[1] = (power >>  8) & 0xff;
+		dw->txpwr[2] = (power >> 16) & 0xff;
+		dw->txpwr[3] = (power >> 24) & 0xff;
+	} else {
+		dw->txpwr[0] = power;
+		dw->txpwr[1] = power;
+		dw->txpwr[2] = power;
+		dw->txpwr[3] = power;
+	}
 
 	/* Reconfigure transmit power */
 	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_TX_POWER)) != 0)
