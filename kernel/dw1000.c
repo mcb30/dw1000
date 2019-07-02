@@ -3879,4 +3879,5 @@ module_spi_driver(dw1000_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Michael Brown <mbrown@fensystems.co.uk>");
+MODULE_AUTHOR("Petri Mattila <petri.mattila@unipart.io>");
 MODULE_DESCRIPTION("DecaWave DW1000 IEEE 802.15.4 driver");
