@@ -559,7 +559,7 @@ union dw1000_sarl {
 #define DW1000_PTP_MAX_ADJ 2147483646ULL
 
 /* Cycle counter wraparound check interval: well within 17.2074 seconds */
-#define DW1000_PTP_WORK_DELAY (3 * HZ)
+#define DW1000_BACKGROUND_WORK_DELAY (3*HZ)
 
 /* Energy detection calculation constants */
 #define DW1000_EDV2_MIN 40
@@ -568,12 +568,6 @@ union dw1000_sarl {
 
 /* Delay required for SAR ADC read */
 #define DW1000_SAR_WAIT_US 10
-
-/* SAR ADC conversions */
-#define DW1000_SAR_VBAT_MVOLT(sar, sar_3v3) \
-	(3300 + ((1000 * ((sar) - (sar_3v3))) / 173))
-#define DW1000_SAR_TEMP_MDEGC(sar, sar_23c) \
-	(23000 + ((100000 * ((sar) - (sar_23c)))) / 114)
 
 /* RX Channel Impulse Power scaling factor */
 #define DW1000_RX_CIR_PWR_SCALE 17
@@ -780,8 +774,6 @@ struct dw1000_tx {
 
 	/* Timestamp */
 	union dw1000_timestamp time;
-	/* Voltage and Temperature */
-	union dw1000_sarl adc;
 
 	/* Data SPI message */
 	struct spi_message data;
@@ -795,12 +787,6 @@ struct dw1000_tx {
 	struct dw1000_spi_transfers sys_ctrl_txstrt;
 	/* TX start check SPI transfer set */
 	struct dw1000_spi_transfers sys_ctrl_check;
-	/* Undocumented SAR control set */
-	struct dw1000_spi_transfers sarc_a1;
-	struct dw1000_spi_transfers sarc_b1;
-	struct dw1000_spi_transfers sarc_b2;
-	/* SARC enable set */
-	struct dw1000_spi_transfers sarc_ena;
 	/* Data SPI message has completed */
 	bool data_complete;
 	/* Data SPI message retry count */
@@ -808,10 +794,6 @@ struct dw1000_tx {
 
 	/* Information SPI message */
 	struct spi_message info;
-	/* SARC disable set */
-	struct dw1000_spi_transfers sarc_dis;
-	/* Voltage and temperature set */
-	struct dw1000_spi_transfers sarl;
 	/* IRQ acknowledgement SPI transfer set */
 	struct dw1000_spi_transfers sys_status;
 	/* Timestamp SPI transfer set */
@@ -856,8 +838,6 @@ struct dw1000_rx {
 	/* Time tracking */
 	union dw1000_rx_ttcko ttcko;
 	union dw1000_rx_ttcki ttcki;
-	/* Voltage and Temperature */
-	union dw1000_sarl adc;
 
 	/* Information SPI message */
 	struct spi_message info;
@@ -874,12 +854,6 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers sys_status;
 	/* Digital diagnostics transfer set */
 	struct dw1000_spi_transfers dig_diag;
-	/* Undocumented SAR control set */
-	struct dw1000_spi_transfers sarc_a1;
-	struct dw1000_spi_transfers sarc_b1;
-	struct dw1000_spi_transfers sarc_b2;
-	/* SARC enable set */
-	struct dw1000_spi_transfers sarc_ena;
 
 	/* Data SPI message */
 	struct spi_message data;
@@ -887,8 +861,6 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers rx_buffer;
 	/* Host buffer toggle SPI transfer set */
 	struct dw1000_spi_transfers sys_ctrl;
-	/* SARC disable set */
-	struct dw1000_spi_transfers sarc_dis;
 	/* Voltage and temperature set */
 	struct dw1000_spi_transfers sarl;
 
@@ -970,6 +942,7 @@ struct dw1000 {
 	struct ieee802154_hw *hw;
 	/* WPAN PHY */
 	struct wpan_phy *phy;
+
 	/* Control GPIOs */
 	int reset_gpio;
 	int power_gpio;
@@ -1069,11 +1042,12 @@ struct dw1000 {
 
 	/* PTP clock */
 	struct dw1000_ptp ptp;
-	/* Clock wraparound detection worker */
-	struct delayed_work ptp_work;
 
 	/* Hardware monitor */
 	struct device *hwmon;
+
+	/* Backround worker */
+	struct delayed_work background_work;
 };
 
 /**

@@ -35,9 +35,6 @@
 /* Enable GPIO controlled LEDs */
 #define DW1000_GPIO_LEDS
 
-/* Enable DW1000 voltage sanity check */
-#undef DW1000_VOLTAGE_CHECK
-
 /* Enable DW1000 sync lost warnings */
 #undef DW1000_SYNC_LOST_WARN
 
@@ -516,6 +513,48 @@ static int dw1000_sar_prepare(struct dw1000 *dw)
 			  DW1000_TC_SARC, &sar->ctrl_dis, sizeof(sar->ctrl_dis));
 	dw1000_init_read(&sar->msg, &sar->sarl, DW1000_TX_CAL,
 			 DW1000_TC_SARL, &sar->adc.raw, sizeof(sar->adc.raw));
+
+	return 0;
+}
+
+/**
+ * dw1000_sar_get_temp(struct dw1000 *dw) - Read SAR temperature reading
+ *
+ * @dw:			DW1000 device
+ * @return:		Temperature in millidegrees Celcius [mC]
+ */
+static inline int dw1000_sar_get_temp(struct dw1000 *dw)
+{
+	return (100000 * ((int)dw->sar.adc.temp - (int)dw->tmeas_23c)) / 114 + 23000;
+}
+
+/**
+ * dw1000_sar_get_volt(struct dw1000 *dw) - Read SAR voltage reading
+ *
+ * @dw:			DW1000 device
+ * @return:		Voltage in millivolts [mV]
+ */
+static inline int dw1000_sar_get_volt(struct dw1000 *dw)
+{
+	return (1000 * ((int)dw->sar.adc.volt - (int)dw->vmeas_3v3)) / 173 + 3300;
+}
+
+/**
+ * dw1000_sar_read() - Read SAR ADC values
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_sar_read(struct dw1000 *dw)
+{
+	struct dw1000_sar *sar = &dw->sar;
+	int rc;
+
+	/* Send SPI message */
+	if ((rc = spi_sync(dw->spi, &sar->msg)) != 0) {
+		dev_dbg(dw->dev, "ADC SAR read failed: %d\n", rc);
+		return rc;
+	}
 
 	return 0;
 }
@@ -1445,14 +1484,15 @@ static uint64_t dw1000_ptp_cc_read(const struct hires_counter *tc)
 }
 
 /**
- * dw1000_ptp_worker() - Clock wraparound detection worker
- *
+ * dw1000_background_worker() - Background worker for:
+ *                             (i) clock wraparound handling,
+ *                            (ii) ADC Temp and Volt reading,
  * @work:		Worker
  */
-static void dw1000_ptp_worker(struct work_struct *work)
+static void dw1000_background_worker(struct work_struct *work)
 {
 	struct dw1000 *dw = container_of(to_delayed_work(work),
-					 struct dw1000, ptp_work);
+					 struct dw1000, background_work);
 	struct hires_counter *tc = &dw->ptp.tc;
 
 	/* Synchronise counter; this must be done at least
@@ -1462,8 +1502,11 @@ static void dw1000_ptp_worker(struct work_struct *work)
 	hires_counter_sync(tc);
 	mutex_unlock(&dw->ptp.mutex);
 
+	/* Read DW1000 voltage and temperature */
+	dw1000_sar_read(dw);
+
 	/* Reschedule worker */
-	schedule_delayed_work(&dw->ptp_work, DW1000_PTP_WORK_DELAY);
+	schedule_delayed_work(&dw->background_work, DW1000_BACKGROUND_WORK_DELAY);
 }
 
 /**
@@ -1770,13 +1813,8 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 
 	/* Voltage and temperature KPIs */
 	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		tsi->temp = DW1000_SAR_TEMP_MDEGC(rx->adc.temp, dw->tmeas_23c) / 10;
-		tsi->volt = DW1000_SAR_VBAT_MVOLT(rx->adc.volt, dw->vmeas_3v3);
-#ifdef DW1000_VOLTAGE_CHECK
-		if (tsi->volt < 3000)
-			dev_warn_ratelimited(dw->dev, "[Rx] low voltage: %dmV (0x%02x)\n",
-					     tsi->volt, rx->adc.volt);
-#endif
+		tsi->temp = dw1000_sar_get_temp(dw) / 10;
+		tsi->volt = dw1000_sar_get_volt(dw);
 	}
 
 	/* Sanity check */
@@ -1861,7 +1899,6 @@ static void dw1000_tx_complete(struct dw1000 *dw, struct sk_buff *skb);
 static int dw1000_tx_prepare(struct dw1000 *dw)
 {
 	struct dw1000_tx *tx = &dw->tx;
-	struct dw1000_sar *sar = &dw->sar;
 
 	/* Initialise transmit descriptor */
 	memset(tx, 0, sizeof(*tx));
@@ -1884,18 +1921,6 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
 	dw1000_init_write(&tx->data, &tx->tx_fctrl, DW1000_TX_FCTRL,
 			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
 
-	/* Include SAR ADC control only if enabled */
-	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		dw1000_init_write(&tx->data, &tx->sarc_a1, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_A, &sar->ctrl_a1, sizeof(sar->ctrl_a1));
-		dw1000_init_write(&tx->data, &tx->sarc_b1, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b1, sizeof(sar->ctrl_b1));
-		dw1000_init_write(&tx->data, &tx->sarc_b2, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b2, sizeof(sar->ctrl_b2));
-		dw1000_init_write(&tx->data, &tx->sarc_ena, DW1000_TX_CAL,
-				  DW1000_TC_SARC, &sar->ctrl_ena, sizeof(sar->ctrl_ena));
-	}
-
 	dw1000_init_write(&tx->data, &tx->sys_ctrl_txstrt, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL0, &tx->txstrt, sizeof(tx->txstrt));
 	dw1000_init_read(&tx->data, &tx->sys_ctrl_check, DW1000_SYS_CTRL,
@@ -1903,14 +1928,6 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
 
 	/* Prepare information SPI message */
 	spi_message_init_no_memset(&tx->info);
-
-	/* Include SAR ADC control only if enabled */
-	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		dw1000_init_write(&tx->info, &tx->sarc_dis, DW1000_TX_CAL,
-				  DW1000_TC_SARC, &sar->ctrl_dis, sizeof(sar->ctrl_dis));
-		dw1000_init_read(&tx->info, &tx->sarl, DW1000_TX_CAL,
-				 DW1000_TC_SARL, &tx->adc.raw, sizeof(tx->adc.raw));
-	}
 
 	dw1000_init_read(&tx->info, &tx->tx_time, DW1000_TX_TIME,
 			 DW1000_TX_STAMP, &tx->time.raw, sizeof(tx->time.raw));
@@ -2066,13 +2083,8 @@ static void dw1000_tx_irq(struct dw1000 *dw)
 
 	/* Assign ADC SAR results */
 	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		tsi->temp = DW1000_SAR_TEMP_MDEGC(tx->adc.temp, dw->tmeas_23c) / 10;
-		tsi->volt = DW1000_SAR_VBAT_MVOLT(tx->adc.volt, dw->vmeas_3v3);
-#ifdef DW1000_VOLTAGE_CHECK
-		if (tsi->volt < 3000)
-			dev_warn_ratelimited(dw->dev, "[Tx] low voltage: %dmV (0x%02x)\n",
-					     tsi->volt, tx->adc.volt);
-#endif
+		tsi->temp = dw1000_sar_get_temp(dw) / 10;
+		tsi->volt = dw1000_sar_get_volt(dw);
 	}
 
 	/* Record hardware timestamp, if applicable */
@@ -2126,7 +2138,6 @@ static void dw1000_tx_complete(struct dw1000 *dw, struct sk_buff *skb)
 static int dw1000_rx_prepare(struct dw1000 *dw)
 {
 	struct dw1000_rx *rx = &dw->rx;
-	struct dw1000_sar *sar = &dw->sar;
 
 	/* Initialise receive descriptor */
 	memset(rx, 0, sizeof(*rx));
@@ -2160,32 +2171,12 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS, 0,
 			 &rx->status, sizeof(rx->status));
 
-	/* Include SAR ADC control only if enabled */
-	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		dw1000_init_write(&rx->info, &rx->sarc_a1, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_A, &sar->ctrl_a1, sizeof(sar->ctrl_a1));
-		dw1000_init_write(&rx->info, &rx->sarc_b1, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b1, sizeof(sar->ctrl_b1));
-		dw1000_init_write(&rx->info, &rx->sarc_b2, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b2, sizeof(sar->ctrl_b2));
-		dw1000_init_write(&rx->info, &rx->sarc_ena, DW1000_TX_CAL,
-				  DW1000_TC_SARC, &sar->ctrl_ena, sizeof(sar->ctrl_ena));
-	}
-
 	/* Prepare data SPI message */
 	spi_message_init_no_memset(&rx->data);
 	dw1000_init_read(&rx->data, &rx->rx_buffer, DW1000_RX_BUFFER, 0,
 			 NULL, 0);
 	dw1000_init_write(&rx->data, &rx->sys_ctrl, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL3, &rx->hrbpt, sizeof(rx->hrbpt));
-
-	/* Include SAR ADC control only if enabled */
-	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		dw1000_init_write(&rx->data, &rx->sarc_dis, DW1000_TX_CAL,
-				  DW1000_TC_SARC, &sar->ctrl_dis, sizeof(sar->ctrl_dis));
-		dw1000_init_read(&rx->data, &rx->sarl, DW1000_TX_CAL,
-				 DW1000_TC_SARL, &rx->adc.raw, sizeof(rx->adc.raw));
-	}
 
 	/* Prepare recovery SPI message */
 	spi_message_init_no_memset(&rx->rcvr);
@@ -2680,22 +2671,20 @@ static int dw1000_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 {
 	struct dw1000 *dw = dev_get_drvdata(dev);
 	struct dw1000_sar *sar = &dw->sar;
-	int rc;
 
-	/* Send SPI message */
-	if ((rc = spi_sync(dw->spi, &sar->msg)) != 0)
-		return rc;
+	/* Read DW1000 voltage and temperature */
+	dw1000_sar_read(dw);
 
 	/* Convert result */
 	switch (type) {
 	case hwmon_in:
-		*val = DW1000_SAR_VBAT_MVOLT(sar->adc.volt, dw->vmeas_3v3);
-		dev_dbg(dw->dev, "voltage %#x (%#x @ 3.3V) is %ldmV\n",
+		*val = dw1000_sar_get_volt(dw);
+		dev_dbg(dw->dev, "hwmon voltage %#x (%#x @3.3V) is %ldmV\n",
 			sar->adc.volt, dw->vmeas_3v3, *val);
 		break;
 	case hwmon_temp:
-		*val = DW1000_SAR_TEMP_MDEGC(sar->adc.temp, dw->tmeas_23c);
-		dev_dbg(dw->dev, "temperature %#x (%#x @ 23degC) is %ldmdegC\n",
+		*val = dw1000_sar_get_temp(dw);
+		dev_dbg(dw->dev, "hwmon temperature %#x (%#x @23C) is %ldmC\n",
 			sar->adc.temp, dw->tmeas_23c, *val);
 		break;
 	default:
@@ -3699,7 +3688,7 @@ static int dw1000_probe(struct spi_device *spi)
 	dw->fpr_threshold = DW1000_FPR_THRESHOLD_DEFAULT;
 	dw->noise_threshold = DW1000_NOISE_THRESHOLD_DEFAULT;
 	spin_lock_init(&dw->tx_lock);
-	INIT_DELAYED_WORK(&dw->ptp_work, dw1000_ptp_worker);
+	INIT_DELAYED_WORK(&dw->background_work, dw1000_background_worker);
 	hw->parent = &spi->dev;
 
 	/* Initialise reset GPIO pin as output */
@@ -3766,9 +3755,6 @@ static int dw1000_probe(struct spi_device *spi)
 		goto err_request_irq;
 	}
 
-	/* Start timer wraparound check worker */
-	schedule_delayed_work(&dw->ptp_work, DW1000_PTP_WORK_DELAY);
-
 	/* Register PTP clock */
 	dw->ptp.clock = ptp_clock_register(&dw->ptp.info, dw->dev);
 	if (IS_ERR(dw->ptp.clock)) {
@@ -3793,7 +3779,12 @@ static int dw1000_probe(struct spi_device *spi)
 		goto err_register_hw;
 	}
 
+	/* Set SPI data pointer */
 	spi_set_drvdata(spi, hw);
+
+	/* Start timer wraparound check worker */
+	schedule_delayed_work(&dw->background_work, DW1000_BACKGROUND_WORK_DELAY);
+
 	return 0;
 
 	ieee802154_unregister_hw(hw);
@@ -3801,7 +3792,6 @@ static int dw1000_probe(struct spi_device *spi)
  err_register_hwmon:
 	ptp_clock_unregister(dw->ptp.clock);
  err_register_ptp:
-	cancel_delayed_work_sync(&dw->ptp_work);
  err_request_irq:
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
  err_create_group:
@@ -3831,9 +3821,9 @@ static int dw1000_remove(struct spi_device *spi)
 	struct ieee802154_hw *hw = spi_get_drvdata(spi);
 	struct dw1000 *dw = hw->priv;
 
+	cancel_delayed_work_sync(&dw->background_work);
 	ieee802154_unregister_hw(hw);
 	ptp_clock_unregister(dw->ptp.clock);
-	cancel_delayed_work_sync(&dw->ptp_work);
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
 	dw1000_reset(dw);
 	ieee802154_free_hw(hw);
