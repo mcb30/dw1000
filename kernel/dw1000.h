@@ -776,30 +776,31 @@ struct dw1000_tx {
 	union dw1000_timestamp time;
 
 	/* Data SPI message */
-	struct spi_message data;
+	struct spi_message spi_data;
 	/* Data buffer SPI transfer set */
-	struct dw1000_spi_transfers tx_buffer;
+	struct dw1000_spi_transfers spi_buffer;
 	/* RX disable SPI transfer set */
-	struct dw1000_spi_transfers sys_ctrl_trxoff;
+	struct dw1000_spi_transfers spi_trxoff;
 	/* Frame control SPI transfer set */
-	struct dw1000_spi_transfers tx_fctrl;
+	struct dw1000_spi_transfers spi_fctrl;
 	/* TX start SPI transfer set */
-	struct dw1000_spi_transfers sys_ctrl_txstrt;
+	struct dw1000_spi_transfers spi_txstrt;
 	/* TX start check SPI transfer set */
-	struct dw1000_spi_transfers sys_ctrl_check;
+	struct dw1000_spi_transfers spi_txcheck;
+
 	/* Data SPI message has completed */
 	bool data_complete;
 	/* Data SPI message retry count */
 	unsigned int retries;
 
 	/* Information SPI message */
-	struct spi_message info;
+	struct spi_message spi_info;
 	/* IRQ acknowledgement SPI transfer set */
-	struct dw1000_spi_transfers sys_status;
+	struct dw1000_spi_transfers spi_status;
 	/* Timestamp SPI transfer set */
-	struct dw1000_spi_transfers tx_time;
+	struct dw1000_spi_transfers spi_txtime;
 	/* RX Enable transfer set */
-	struct dw1000_spi_transfers rx_enab;
+	struct dw1000_spi_transfers spi_rxena;
 };
 
 /* Receive descriptor */
@@ -840,42 +841,40 @@ struct dw1000_rx {
 	union dw1000_rx_ttcki ttcki;
 
 	/* Information SPI message */
-	struct spi_message info;
+	struct spi_message spi_info;
 	/* Frame information SPI transfer set */
-	struct dw1000_spi_transfers rx_finfo;
+	struct dw1000_spi_transfers spi_finfo;
 	/* Timestamp SPI transfer set */
-	struct dw1000_spi_transfers rx_time;
+	struct dw1000_spi_transfers spi_time;
 	/* Frame quality transfer set */
-	struct dw1000_spi_transfers rx_fqual;
+	struct dw1000_spi_transfers spi_fqual;
 	/* Frame time tracking transfer set */
-	struct dw1000_spi_transfers rx_ttcko;
-	struct dw1000_spi_transfers rx_ttcki;
+	struct dw1000_spi_transfers spi_ttcko;
+	struct dw1000_spi_transfers spi_ttcki;
 	/* System status transfer set */
-	struct dw1000_spi_transfers sys_status;
+	struct dw1000_spi_transfers spi_sys_status;
 	/* Digital diagnostics transfer set */
-	struct dw1000_spi_transfers dig_diag;
+	struct dw1000_spi_transfers spi_dig_diag;
 
 	/* Data SPI message */
-	struct spi_message data;
+	struct spi_message spi_data;
 	/* Data buffer SPI transfer set */
-	struct dw1000_spi_transfers rx_buffer;
+	struct dw1000_spi_transfers spi_buffer;
 	/* Host buffer toggle SPI transfer set */
-	struct dw1000_spi_transfers sys_ctrl;
-	/* Voltage and temperature set */
-	struct dw1000_spi_transfers sarl;
+	struct dw1000_spi_transfers spi_sys_ctrl;
 
 	/* Recovery SPI message */
-	struct spi_message rcvr;
+	struct spi_message spi_rcvr;
 	/* Event mask transfer set */
-	struct dw1000_spi_transfers rv_mask0;
+	struct dw1000_spi_transfers spi_mask0;
 	/* Status clear transfer set */
-	struct dw1000_spi_transfers rv_status;
+	struct dw1000_spi_transfers spi_status;
 	/* Event mask transfer set */
-	struct dw1000_spi_transfers rv_mask1;
+	struct dw1000_spi_transfers spi_mask1;
 	/* Buffer toggle transfer set */
-	struct dw1000_spi_transfers rv_hrbpt;
+	struct dw1000_spi_transfers spi_hrbpt;
 	/* RX Enable transfer set */
-	struct dw1000_spi_transfers rv_rxenab;
+	struct dw1000_spi_transfers spi_rxena;
 };
 
 /* SAR descriptor */
@@ -891,16 +890,16 @@ struct dw1000_sar {
 	uint8_t ctrl_dis;
 
 	/* SAR SPI message */
-	struct spi_message msg;
+	struct spi_message spi_msg;
 	/* Undocumented SAR control set */
-	struct dw1000_spi_transfers sarc_a1;
-	struct dw1000_spi_transfers sarc_b1;
-	struct dw1000_spi_transfers sarc_b2;
+	struct dw1000_spi_transfers spi_sarc_a1;
+	struct dw1000_spi_transfers spi_sarc_b1;
+	struct dw1000_spi_transfers spi_sarc_b2;
 	/* SARC enable/disable set */
-	struct dw1000_spi_transfers sarc_ena;
-	struct dw1000_spi_transfers sarc_dis;
+	struct dw1000_spi_transfers spi_sarc_ena;
+	struct dw1000_spi_transfers spi_sarc_dis;
 	/* Voltage and temperature set */
-	struct dw1000_spi_transfers sarl;
+	struct dw1000_spi_transfers spi_sarl;
 };
 
 /* PTP clock */

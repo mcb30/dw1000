@@ -496,22 +496,22 @@ static int dw1000_sar_prepare(struct dw1000 *dw)
 	sar->ctrl_dis = 0;
 
 	/* Prepare SAR SPI message */
-	spi_message_init_no_memset(&sar->msg);
-	dw1000_init_write(&sar->msg, &sar->sarc_a1, DW1000_RF_CONF,
+	spi_message_init_no_memset(&sar->spi_msg);
+	dw1000_init_write(&sar->spi_msg, &sar->spi_sarc_a1, DW1000_RF_CONF,
 			  DW1000_RF_SENSOR_SARC_A, &sar->ctrl_a1, sizeof(sar->ctrl_a1));
-	dw1000_init_write(&sar->msg, &sar->sarc_b1, DW1000_RF_CONF,
+	dw1000_init_write(&sar->spi_msg, &sar->spi_sarc_b1, DW1000_RF_CONF,
 			  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b1, sizeof(sar->ctrl_b1));
-	dw1000_init_write(&sar->msg, &sar->sarc_b2, DW1000_RF_CONF,
+	dw1000_init_write(&sar->spi_msg, &sar->spi_sarc_b2, DW1000_RF_CONF,
 			  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b2, sizeof(sar->ctrl_b2));
-	dw1000_init_write(&sar->msg, &sar->sarc_ena, DW1000_TX_CAL,
+	dw1000_init_write(&sar->spi_msg, &sar->spi_sarc_ena, DW1000_TX_CAL,
 			  DW1000_TC_SARC, &sar->ctrl_ena, sizeof(sar->ctrl_ena));
 
 	/* Keep the ADC on for a few us */
-	sar->sarc_ena.data.delay_usecs = DW1000_SAR_WAIT_US;
+	sar->spi_sarc_ena.data.delay_usecs = DW1000_SAR_WAIT_US;
 
-	dw1000_init_write(&sar->msg, &sar->sarc_dis, DW1000_TX_CAL,
+	dw1000_init_write(&sar->spi_msg, &sar->spi_sarc_dis, DW1000_TX_CAL,
 			  DW1000_TC_SARC, &sar->ctrl_dis, sizeof(sar->ctrl_dis));
-	dw1000_init_read(&sar->msg, &sar->sarl, DW1000_TX_CAL,
+	dw1000_init_read(&sar->spi_msg, &sar->spi_sarl, DW1000_TX_CAL,
 			 DW1000_TC_SARL, &sar->adc.raw, sizeof(sar->adc.raw));
 
 	return 0;
@@ -551,7 +551,7 @@ static int dw1000_sar_read(struct dw1000 *dw)
 	int rc;
 
 	/* Send SPI message */
-	if ((rc = spi_sync(dw->spi, &sar->msg)) != 0) {
+	if ((rc = spi_sync(dw->spi, &sar->spi_msg)) != 0) {
 		dev_dbg(dw->dev, "ADC SAR read failed: %d\n", rc);
 		return rc;
 	}
@@ -1911,29 +1911,29 @@ static int dw1000_tx_prepare(struct dw1000 *dw)
 	tx->rxena  = DW1000_SYS_CTRL1_RXENAB;
 
 	/* Prepare data SPI message */
-	spi_message_init_no_memset(&tx->data);
-	tx->data.complete = dw1000_tx_data_complete;
-	tx->data.context = dw;
-	dw1000_init_write(&tx->data, &tx->tx_buffer, DW1000_TX_BUFFER, 0,
+	spi_message_init_no_memset(&tx->spi_data);
+	tx->spi_data.complete = dw1000_tx_data_complete;
+	tx->spi_data.context = dw;
+	dw1000_init_write(&tx->spi_data, &tx->spi_buffer, DW1000_TX_BUFFER, 0,
 			  NULL, 0);
-	dw1000_init_write(&tx->data, &tx->sys_ctrl_trxoff, DW1000_SYS_CTRL,
+	dw1000_init_write(&tx->spi_data, &tx->spi_trxoff, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL0, &tx->trxoff, sizeof(tx->trxoff));
-	dw1000_init_write(&tx->data, &tx->tx_fctrl, DW1000_TX_FCTRL,
+	dw1000_init_write(&tx->spi_data, &tx->spi_fctrl, DW1000_TX_FCTRL,
 			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
 
-	dw1000_init_write(&tx->data, &tx->sys_ctrl_txstrt, DW1000_SYS_CTRL,
+	dw1000_init_write(&tx->spi_data, &tx->spi_txstrt, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL0, &tx->txstrt, sizeof(tx->txstrt));
-	dw1000_init_read(&tx->data, &tx->sys_ctrl_check, DW1000_SYS_CTRL,
+	dw1000_init_read(&tx->spi_data, &tx->spi_txcheck, DW1000_SYS_CTRL,
 			 DW1000_SYS_CTRL0, &tx->check, sizeof(tx->check));
 
 	/* Prepare information SPI message */
-	spi_message_init_no_memset(&tx->info);
+	spi_message_init_no_memset(&tx->spi_info);
 
-	dw1000_init_read(&tx->info, &tx->tx_time, DW1000_TX_TIME,
+	dw1000_init_read(&tx->spi_info, &tx->spi_txtime, DW1000_TX_TIME,
 			 DW1000_TX_STAMP, &tx->time.raw, sizeof(tx->time.raw));
-	dw1000_init_write(&tx->info, &tx->sys_status, DW1000_SYS_STATUS,
+	dw1000_init_write(&tx->spi_info, &tx->spi_status, DW1000_SYS_STATUS,
 			  DW1000_SYS_STATUS0, &tx->txfrs, sizeof(tx->txfrs));
-	dw1000_init_write(&tx->info, &tx->rx_enab, DW1000_SYS_CTRL,
+	dw1000_init_write(&tx->spi_info, &tx->spi_rxena, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL1, &tx->rxena, sizeof(tx->rxena));
 
 	return 0;
@@ -1965,8 +1965,8 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 
 	/* Update data SPI message */
 	tx->skb = skb;
-	tx->tx_buffer.data.tx_buf = skb->data;
-	tx->tx_buffer.data.len = skb->len;
+	tx->spi_buffer.data.tx_buf = skb->data;
+	tx->spi_buffer.data.len = skb->len;
 	tx->len = DW1000_TX_FCTRL0_TFLEN(skb->len + IEEE802154_FCS_LEN);
 	tx->data_complete = false;
 	tx->retries = 0;
@@ -1977,7 +1977,7 @@ static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 	skb_tx_timestamp(skb);
 
 	/* Initiate data SPI message */
-	if ((rc = spi_async(dw->spi, &tx->data)) != 0)
+	if ((rc = spi_async(dw->spi, &tx->spi_data)) != 0)
 		goto err_spi;
 
 	spin_unlock_irqrestore(&dw->tx_lock, flags);
@@ -2007,9 +2007,9 @@ static void dw1000_tx_data_complete(void *context)
 	spin_lock_irqsave(&dw->tx_lock, flags);
 
 	/* Complete transmission immediately if data SPI message failed */
-	if (unlikely(tx->data.status != 0)) {
+	if (unlikely(tx->spi_data.status != 0)) {
 		dev_err(dw->dev, "TX data message failed: %d\n",
-			tx->data.status);
+			tx->spi_data.status);
 		goto err_status;
 	}
 
@@ -2027,8 +2027,8 @@ static void dw1000_tx_data_complete(void *context)
 		/* Resubmit the transmit instruction (without
 		 * repopulating the transmit data buffer).
 		 */
-		tx->tx_buffer.data.len = 0;
-		if ((rc = spi_async(dw->spi, &tx->data)) != 0)
+		tx->spi_buffer.data.len = 0;
+		if ((rc = spi_async(dw->spi, &tx->spi_data)) != 0)
 			goto err_retry;
 	} else {
 		/* Mark data SPI message as complete */
@@ -2071,7 +2071,7 @@ static void dw1000_tx_irq(struct dw1000 *dw)
 	spin_unlock_irqrestore(&dw->tx_lock, flags);
 
 	/* Send information SPI message */
-	if ((rc = spi_sync(dw->spi, &tx->info)) != 0) {
+	if ((rc = spi_sync(dw->spi, &tx->spi_info)) != 0) {
 		dev_err(dw->dev, "TX information message failed: %d\n", rc);
 		spin_lock_irqsave(&dw->tx_lock, flags);
 		skb = tx->skb;
@@ -2150,45 +2150,45 @@ static int dw1000_rx_prepare(struct dw1000 *dw)
 	rx->clear = cpu_to_le32(DW1000_RX_STATE_CLEAR);
 
 	/* Prepare information SPI message */
-	spi_message_init_no_memset(&rx->info);
-	dw1000_init_read(&rx->info, &rx->rx_finfo, DW1000_RX_FINFO, 0,
+	spi_message_init_no_memset(&rx->spi_info);
+	dw1000_init_read(&rx->spi_info, &rx->spi_finfo, DW1000_RX_FINFO, 0,
 			 &rx->finfo, sizeof(rx->finfo));
-	dw1000_init_read(&rx->info, &rx->rx_time, DW1000_RX_TIME, 0,
+	dw1000_init_read(&rx->spi_info, &rx->spi_time, DW1000_RX_TIME, 0,
 			 &rx->time, sizeof(rx->time));
-	dw1000_init_read(&rx->info, &rx->rx_fqual, DW1000_RX_FQUAL, 0,
+	dw1000_init_read(&rx->spi_info, &rx->spi_fqual, DW1000_RX_FQUAL, 0,
 			 &rx->fqual, sizeof(rx->fqual));
 
 	/* Include Time Tracking only if enabled */
 	if (dw1000_tsinfo_ena & DW1000_TSINFO_TTCK) {
-		dw1000_init_read(&rx->info, &rx->rx_ttcki, DW1000_RX_TTCKI, 0,
+		dw1000_init_read(&rx->spi_info, &rx->spi_ttcki, DW1000_RX_TTCKI, 0,
 				 &rx->ttcki, sizeof(rx->ttcki.raw));
-		dw1000_init_read(&rx->info, &rx->rx_ttcko, DW1000_RX_TTCKO, 0,
+		dw1000_init_read(&rx->spi_info, &rx->spi_ttcko, DW1000_RX_TTCKO, 0,
 				 &rx->ttcko, sizeof(rx->ttcko.raw));
 	}
 
-	dw1000_init_read(&rx->info, &rx->dig_diag, DW1000_DIG_DIAG,
+	dw1000_init_read(&rx->spi_info, &rx->spi_dig_diag, DW1000_DIG_DIAG,
 			 DW1000_EVC_OVR, &rx->evc_ovr, sizeof(rx->evc_ovr));
-	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS, 0,
+	dw1000_init_read(&rx->spi_info, &rx->spi_sys_status, DW1000_SYS_STATUS, 0,
 			 &rx->status, sizeof(rx->status));
 
 	/* Prepare data SPI message */
-	spi_message_init_no_memset(&rx->data);
-	dw1000_init_read(&rx->data, &rx->rx_buffer, DW1000_RX_BUFFER, 0,
+	spi_message_init_no_memset(&rx->spi_data);
+	dw1000_init_read(&rx->spi_data, &rx->spi_buffer, DW1000_RX_BUFFER, 0,
 			 NULL, 0);
-	dw1000_init_write(&rx->data, &rx->sys_ctrl, DW1000_SYS_CTRL,
+	dw1000_init_write(&rx->spi_data, &rx->spi_sys_ctrl, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL3, &rx->hrbpt, sizeof(rx->hrbpt));
 
 	/* Prepare recovery SPI message */
-	spi_message_init_no_memset(&rx->rcvr);
-	dw1000_init_write(&rx->rcvr, &rx->rv_mask0, DW1000_SYS_MASK,
+	spi_message_init_no_memset(&rx->spi_rcvr);
+	dw1000_init_write(&rx->spi_rcvr, &rx->spi_mask0, DW1000_SYS_MASK,
 			  0, &rx->mask0, sizeof(rx->mask0));
-	dw1000_init_write(&rx->rcvr, &rx->rv_status, DW1000_SYS_STATUS,
+	dw1000_init_write(&rx->spi_rcvr, &rx->spi_status, DW1000_SYS_STATUS,
 			  0, &rx->clear, sizeof(rx->clear));
-	dw1000_init_write(&rx->rcvr, &rx->rv_mask1, DW1000_SYS_MASK,
+	dw1000_init_write(&rx->spi_rcvr, &rx->spi_mask1, DW1000_SYS_MASK,
 			  0, &rx->mask1, sizeof(rx->mask1));
-	dw1000_init_write(&rx->rcvr, &rx->rv_hrbpt, DW1000_SYS_CTRL,
+	dw1000_init_write(&rx->spi_rcvr, &rx->spi_hrbpt, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL3, &rx->hrbpt, sizeof(rx->hrbpt));
-	dw1000_init_write(&rx->rcvr, &rx->rv_rxenab, DW1000_SYS_CTRL,
+	dw1000_init_write(&rx->spi_rcvr, &rx->spi_rxena, DW1000_SYS_CTRL,
 			  DW1000_SYS_CTRL1, &rx->rxena, sizeof(rx->rxena));
 
 	return 0;
@@ -2208,7 +2208,7 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	int rc;
 
 	/* Send information SPI message */
-	if ((rc = spi_sync(dw->spi, &rx->info)) != 0) {
+	if ((rc = spi_sync(dw->spi, &rx->spi_info)) != 0) {
 		dev_err(dw->dev, "RX information message failed: %d\n", rc);
 		goto err_info;
 	}
@@ -2310,11 +2310,11 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	dw1000_tsinfo(dw, &rx->time.rx_stamp, &rx->tsinfo, skb_hwtstamps(skb));
 
 	/* Update data SPI message */
-	rx->rx_buffer.data.rx_buf = skb->data;
-	rx->rx_buffer.data.len = len;
+	rx->spi_buffer.data.rx_buf = skb->data;
+	rx->spi_buffer.data.len = len;
 
 	/* Send data SPI message */
-	if ((rc = spi_sync(dw->spi, &rx->data)) != 0) {
+	if ((rc = spi_sync(dw->spi, &rx->spi_data)) != 0) {
 		dev_err(dw->dev, "RX data message failed: %d\n", rc);
 		goto err_data;
 	}
@@ -2334,13 +2334,13 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	dw->rx_sync_cnt = 0;
 
 	/* Send recovery SPI message */
-	if ((rc = spi_sync(dw->spi, &rx->rcvr)) != 0) {
+	if ((rc = spi_sync(dw->spi, &rx->spi_rcvr)) != 0) {
 		dev_err(dw->dev, "RX recovery#2 failed: %d\n", rc);
 	}
 
  err_recover:
 	/* Send recovery SPI message */
-	if ((rc = spi_sync(dw->spi, &rx->rcvr)) != 0) {
+	if ((rc = spi_sync(dw->spi, &rx->spi_rcvr)) != 0) {
 		dev_err(dw->dev, "RX recovery#1 failed: %d\n", rc);
 	}
 }
