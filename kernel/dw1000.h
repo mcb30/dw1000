@@ -42,8 +42,12 @@
 /* Maximum number of calibrations profiles */
 #define DW1000_MAX_CALIBS 24
 
-/* DW1000 module power on delay (ms) */
+/* Maximum number of error recovery actions */
+#define DW1000_MAX_RECOVERY 4
+
+/* DW1000 module power delays (ms) */
 #define DW1000_POWER_ON_DELAY 100
+#define DW1000_POWER_OFF_DELAY 100
 
 /* DW1000 hard reset delay (ms) */
 #define DW1000_HARD_RESET_DELAY 10
@@ -55,7 +59,7 @@
 #define DW1000_CHANNELS (BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | BIT(7))
 
 /* Default channel */
-#define DW1000_CHANNEL_DEFAULT 7
+#define DW1000_CHANNEL_DEFAULT 5
 
 /* Maximum SPI bus speed when PLL is not yet locked */
 #define DW1000_SPI_SLOW_HZ 3000000
@@ -97,10 +101,10 @@ struct dw1000_spi_transfers {
 union dw1000_eui64 {
 	/* OTP values */
 	uint32_t otp[2];
-	/* Raw bytes */
-	uint8_t raw[8];
 	/* IEEE 802.15.4 EUI-64 address */
 	__le64 addr;
+	/* Raw bytes */
+	uint8_t raw[8];
 };
 
 /* LDO tuning register format */
@@ -111,6 +115,9 @@ union dw1000_ldotune {
 	uint8_t raw[5];
 };
 
+/* Timestamp mask */
+#define DW1000_TIMESTAMP_MASK 0xffffffffffUL
+
 /* Timestamp format */
 union dw1000_timestamp {
 	/* Cycle count */
@@ -118,21 +125,6 @@ union dw1000_timestamp {
 	/* Raw bytes */
 	uint8_t raw[5];
 };
-
-/* Timestamp mask */
-#define DW1000_TIMESTAMP_MASK 0xffffffffffUL
-
-/* Frame quality register format */
-struct dw1000_rx_fqual {
-	/* Standard deviation of noise */
-	__le16 std_noise;
-	/* First path amplitude point 2 */
-	__le16 fp_ampl2;
-	/* First path amplitude point 3 */
-	__le16 fp_ampl3;
-	/* Channel impulse response power */
-	__le16 cir_pwr;
-} __packed;
 
 /* Receive time stamp register format */
 union dw1000_rx_time {
@@ -147,6 +139,18 @@ union dw1000_rx_time {
 		__le16 fp_ampl1;
 	} __packed;
 };
+
+/* Frame quality register format */
+struct dw1000_rx_fqual {
+	/* Standard deviation of noise */
+	__le16 std_noise;
+	/* First path amplitude point 2 */
+	__le16 fp_ampl2;
+	/* First path amplitude point 3 */
+	__le16 fp_ampl3;
+	/* Channel impulse response power */
+	__le16 cir_pwr;
+} __packed;
 
 /* Receive time tracking interval */
 union dw1000_rx_ttcki {
@@ -280,6 +284,20 @@ union dw1000_sarl {
 #define DW1000_SYS_CFG_RXM110K			0x00400000UL
 #define DW1000_SYS_CFG_RXAUTR			0x20000000UL
 
+#define DW1000_SYS_CFG_FFA \
+	(DW1000_SYS_CFG_FFAB | \
+	 DW1000_SYS_CFG_FFAD | \
+	 DW1000_SYS_CFG_FFAA | \
+	 DW1000_SYS_CFG_FFAM | \
+	 DW1000_SYS_CFG_FFAR | \
+	 DW1000_SYS_CFG_FFA4 | \
+	 DW1000_SYS_CFG_FFA5)
+
+#define DW1000_SYS_CFG_FF \
+	(DW1000_SYS_CFG_FFEN | \
+	 DW1000_SYS_CFG_FFBC | \
+	 DW1000_SYS_CFG_FFA)
+
 /* Transmit frame control register */
 #define DW1000_TX_FCTRL0		0x00
 #define DW1000_TX_FCTRL0_TFLEN(n)		((n) << 0)
@@ -308,18 +326,41 @@ union dw1000_sarl {
 #define DW1000_SYS_CTRL3_HRBPT			0x01
 
 /* System event mask register */
+#define DW1000_SYS_MASK_MCPLOCK			0x00000002UL
+#define DW1000_SYS_MASK_MTXFRB			0x00000010UL
+#define DW1000_SYS_MASK_MTXPRS			0x00000020UL
+#define DW1000_SYS_MASK_MTXPHS			0x00000040UL
 #define DW1000_SYS_MASK_MTXFRS			0x00000080UL
+#define DW1000_SYS_MASK_MRXPRD			0x00000100UL
+#define DW1000_SYS_MASK_MRXSFDD			0x00000200UL
+#define DW1000_SYS_MASK_MLDEDONE		0x00000400UL
+#define DW1000_SYS_MASK_MRXPHD			0x00000800UL
+#define DW1000_SYS_MASK_MRXPHE			0x00001000UL
 #define DW1000_SYS_MASK_MRXDFR			0x00002000UL
 #define DW1000_SYS_MASK_MRXFCG			0x00004000UL
+#define DW1000_SYS_MASK_MRXFCE			0x00008000UL
+#define DW1000_SYS_MASK_MRXRFSL			0x00010000UL
+#define DW1000_SYS_MASK_MRXRFTO			0x00020000UL
+#define DW1000_SYS_MASK_MLDEERR			0x00040000UL
 #define DW1000_SYS_MASK_MRXOVRR			0x00100000UL
+#define DW1000_SYS_MASK_MRXPTO			0x00200000UL
+#define DW1000_SYS_MASK_MRFPLL_LL		0x01000000UL
+#define DW1000_SYS_MASK_MCLKPLL_LL		0x02000000UL
 
-#define DW1000_SYS_MASK_MACTIVE		( \
-	DW1000_SYS_MASK_MTXFRS		| \
+#define DW1000_SYS_MASK_RX		( \
 	DW1000_SYS_MASK_MRXDFR		| \
 	DW1000_SYS_MASK_MRXOVRR 	)
 
+#define DW1000_SYS_MASK_TX		( \
+	DW1000_SYS_MASK_MTXFRS		)
+
+#define DW1000_SYS_MASK_IDLE		(0)
+
 /* System event status register */
+#define DW1000_SYS_STATUS_IRQS			0x00000001UL
 #define DW1000_SYS_STATUS_CPLOCK		0x00000002UL
+#define DW1000_SYS_STATUS_ESYNCR		0x00000004UL
+#define DW1000_SYS_STATUS_AAT			0x00000008UL
 #define DW1000_SYS_STATUS_TXFRB			0x00000010UL
 #define DW1000_SYS_STATUS_TXPRS			0x00000020UL
 #define DW1000_SYS_STATUS_TXPHS			0x00000040UL
@@ -344,7 +385,6 @@ union dw1000_sarl {
 #define DW1000_SYS_STATUS_HSRBP			0x40000000UL
 #define DW1000_SYS_STATUS_ICRBP			0x80000000UL
 #define DW1000_SYS_STATUS0		0x00
-#define DW1000_SYS_STATUS0_
 #define DW1000_SYS_STATUS0_TXFRB		0x10
 #define DW1000_SYS_STATUS0_TXPRS		0x20
 #define DW1000_SYS_STATUS0_TXPHS		0x40
@@ -353,8 +393,13 @@ union dw1000_sarl {
 #define DW1000_SYS_STATUS2		0x02
 #define DW1000_SYS_STATUS2_RXOVRR		0x10
 
-/* Clear-on-write RX status bits */
-#define DW1000_RX_STATE_CLEAR		( \
+#define DW1000_SYS_STATUS_DBLBUF	( \
+	DW1000_SYS_STATUS_LDEDONE	| \
+	DW1000_SYS_STATUS_RXDFR		| \
+	DW1000_SYS_STATUS_RXFCG		| \
+	DW1000_SYS_STATUS_RXFCE		)
+
+#define DW1000_SYS_STATUS_RX		( \
 	DW1000_SYS_STATUS_RXPRD		| \
 	DW1000_SYS_STATUS_RXSFDD 	| \
 	DW1000_SYS_STATUS_LDEDONE	| \
@@ -366,12 +411,32 @@ union dw1000_sarl {
 	DW1000_SYS_STATUS_RXRFSL 	| \
 	DW1000_SYS_STATUS_RXRFTO 	| \
 	DW1000_SYS_STATUS_LDEERR 	| \
+	DW1000_SYS_STATUS_RXOVRR	| \
 	DW1000_SYS_STATUS_RXPTO 	| \
 	DW1000_SYS_STATUS_RXSFDTO	)
 
+#define DW1000_SYS_STATUS_TX		( \
+	DW1000_SYS_STATUS_AAT		| \
+	DW1000_SYS_STATUS_TXFRB	        | \
+	DW1000_SYS_STATUS_TXPRS		| \
+	DW1000_SYS_STATUS_TXPHS		| \
+	DW1000_SYS_STATUS_TXFRS		)
+
+#define DW1000_SYS_STATUS_TRX		( \
+	DW1000_SYS_STATUS_RX		| \
+	DW1000_SYS_STATUS_TX		)
+
+#define DW1000_SYS_STATUS_ERROR		( \
+	DW1000_SYS_STATUS_RFPLL_LL	| \
+	DW1000_SYS_STATUS_CLKPLL_LL	)
+
+#define DW1000_SYS_STATUS_RESET		( \
+	DW1000_SYS_STATUS_TRX		| \
+	DW1000_SYS_STATUS_ERROR		)
+
 /* RX HSRBP-ICRBP sync condition */
 #define DW1000_HSRPB_SYNC(status) 	\
-	(!!((status) & DW1000_SYS_STATUS_HSRBP) != \
+	(!!((status) & DW1000_SYS_STATUS_HSRBP) == \
 	 !!((status) & DW1000_SYS_STATUS_ICRBP))
 
 /* System status register */
@@ -415,6 +480,10 @@ union dw1000_sarl {
 #define DW1000_AGC_STAT1_EDG1(val)		(((val) >> 6) & 0x1f)
 #define DW1000_AGC_STAT1_EDV2(val)		(((val) >> 11) & 0x1ff)
 
+/* External Synchronisation Control */
+#define DW1000_EC_CTRL			0x00
+#define DW1000_EC_CTRL_PLLLDT			0x00000004UL
+
 /* GPIO control registers */
 #define DW1000_GPIO_MODE		0x00
 #define DW1000_GPIO_MODE_MSGP0_RXOKLED		0x00000040UL
@@ -456,7 +525,7 @@ union dw1000_sarl {
 #define DW1000_FS_PLLTUNE		0x0b
 #define DW1000_FS_XTALT			0x0e
 #define DW1000_FS_XTALT_XTALT(n)		((n) << 0)
-#define DW1000_FS_XTALT_XTALT_MIDPOINT		DW1000_FS_XTALT_XTALT(0x0f)
+#define DW1000_FS_XTALT_XTALT_MIDPOINT		DW1000_FS_XTALT_XTALT(0x11)
 #define DW1000_FS_XTALT_XTALT_MASK		DW1000_FS_XTALT_XTALT(0x1f)
 
 /* One-time programmable memory interface registers */
@@ -558,8 +627,11 @@ union dw1000_sarl {
  */
 #define DW1000_PTP_MAX_ADJ 2147483646ULL
 
-/* Cycle counter wraparound check interval: well within 17.2074 seconds */
-#define DW1000_BACKGROUND_WORK_DELAY (3*HZ)
+/* Cycle counter wraparound check interval: well within 17.2074 seconds [ms] */
+#define DW1000_PTP_SYNC_DELAY 3000
+
+/* ADC read interval [ms] */
+#define DW1000_ADC_READ_DELAY 1000
 
 /* Energy detection calculation constants */
 #define DW1000_EDV2_MIN 40
@@ -598,7 +670,13 @@ union dw1000_sarl {
  * for no discernible reason.  Work around this hardware bug by
  * retrying the instruction several times if needed.
  */
-#define DW1000_TX_MAX_RETRIES 5
+#define DW1000_TX_MAX_RETRIES 3
+
+/* Maximum skb length
+ *
+ * Maximum supported frame size minus the checksum.
+ */
+#define DW1000_MAX_SKB_LEN  (IEEE802154_MAX_SIFS_FRAME_SIZE - IEEE802154_FCS_LEN)
 
 /* Pulse repetition frequencies */
 enum dw1000_prf {
@@ -715,6 +793,62 @@ struct dw1000_regmap {
 	const struct dw1000_regmap_config *config;
 };
 
+/* DW1000 radio config */
+struct dw1000_config {
+	/* Config access mutex */
+	struct mutex mutex;
+
+	/* Pending changes */
+	unsigned long pending;
+	/* Reconfig return code */
+	int rc;
+	
+	/* IEEE 802.15.4 address */
+	uint64_t ieee_addr;
+	/* Short address */
+	uint16_t short_addr;
+	/* PAN id */
+	uint16_t pan_id;
+	/* Frame filter */
+	uint16_t frame_filter;
+	
+	/* XTAL Trim */
+	uint8_t xtalt;
+	/* Channel number */
+	uint8_t channel;
+	/* Antenna delays */
+	uint16_t antd[DW1000_PRF_COUNT];
+	/* Preamble codes */
+	uint8_t pcode[DW1000_PRF_COUNT];
+	/* Preamble symbol repetitions */
+	uint16_t txpsr;
+	/* Pulse repetition frequency */
+	uint8_t prf;
+	/* Data rate */
+	uint32_t rate;
+	/* Transmit power */
+	uint8_t txpwr[4];
+	/* Smart power control enabled */
+	bool smart_power;
+};
+
+/* Calibration profile name length */
+#define DW1000_CALIB_ID_LEN 16
+
+/* Calibration profile */
+struct dw1000_calib {
+	/* Name */
+	char id[DW1000_CALIB_ID_LEN];
+	/* Channel */
+	uint8_t ch;
+	/* PRF */
+	uint8_t prf;
+	/* ANTD */
+	uint16_t antd;
+	/* Tx Power */
+	uint32_t power;
+};
+
 /* Timestamp info */
 struct dw1000_tsinfo {
 	/* Raw hardware timestamp */
@@ -739,41 +873,46 @@ struct dw1000_tsinfo {
 	uint16_t fp_ampl3;
 	/* Channel Impulse Response Power */
 	uint32_t cir_pwr;
-	/* First Patch Impulse Power */
+	/* First Path Impulse Power */
 	uint32_t fp_pwr;
 	/* Time tracking offset */
 	uint32_t ttcko;
 	/* Time tracking interval */
 	uint32_t ttcki;
 	/* Temperature */
-	uint16_t temp;
+	int16_t temp;
 	/* Voltage */
-	uint16_t volt;
+	int16_t volt;
 };
 
 /* Transmit descriptor */
 struct dw1000_tx {
+	/* Transmit lock */
+	spinlock_t lock;
+	/* Retries counter */
+	unsigned retries;
+
 	/* Socket buffer */
 	struct sk_buff *skb;
-
+	/* Timestamp */
+	union dw1000_timestamp time;
 	/* Timestamp info */
 	struct dw1000_tsinfo tsinfo;
 
-	/* TX/RX off command */
+	/* SPI TX/RX off command */
 	uint8_t trxoff;
-	/* TX start command */
+	/* SPI TX start command */
 	uint8_t txstrt;
-	/* TX frame sent ack */
+	/* SPI TX status clear */
 	uint8_t txfrs;
-	/* RX ENAble command */
+	/* SPI RX enable */
 	uint8_t rxena;
-	/* Length */
+	/* SPI Length */
 	uint8_t len;
-	/* TX start check */
-	uint8_t check;
-
-	/* Timestamp */
-	union dw1000_timestamp time;
+	/* SPI IRQ mask */
+	__le32 txmask;
+	/* SPI IRQ mask */
+	__le32 rxmask;
 
 	/* Data SPI message */
 	struct spi_message spi_data;
@@ -783,15 +922,12 @@ struct dw1000_tx {
 	struct dw1000_spi_transfers spi_trxoff;
 	/* Frame control SPI transfer set */
 	struct dw1000_spi_transfers spi_fctrl;
+	/* IRQ mask SPI transfer set */
+	struct dw1000_spi_transfers spi_txmask;
+	/* IRQ mask SPI transfer set */
+	struct dw1000_spi_transfers spi_rxmask;
 	/* TX start SPI transfer set */
 	struct dw1000_spi_transfers spi_txstrt;
-	/* TX start check SPI transfer set */
-	struct dw1000_spi_transfers spi_txcheck;
-
-	/* Data SPI message has completed */
-	bool data_complete;
-	/* Data SPI message retry count */
-	unsigned int retries;
 
 	/* Information SPI message */
 	struct spi_message spi_info;
@@ -799,7 +935,7 @@ struct dw1000_tx {
 	struct dw1000_spi_transfers spi_status;
 	/* Timestamp SPI transfer set */
 	struct dw1000_spi_transfers spi_txtime;
-	/* RX Enable transfer set */
+	/* Rx enable transfer set */
 	struct dw1000_spi_transfers spi_rxena;
 };
 
@@ -809,34 +945,33 @@ struct dw1000_rx {
 	bool frame_valid;
 	/* Timestamp validity */
 	bool timestamp_valid;
-
+	/* Last seen RX timestamp */
+	uint64_t timestamp[2];
 	/* Received Link Quality */
 	uint8_t lqi;
 
-	/* RX ENAble command */
-	uint8_t rxena;
-	/* Host side Rx Buffer Pointer Toggle */
+	/* SPI HRBPT */
 	uint8_t hrbpt;
-	/* RX status */
+	/* SPI Status */
 	__le32 status;
-	/* Frame information */
+	/* SPI Frame information */
 	__le32 finfo;
-	/* Overrun count */
-	__le16 evc_ovr;
-	/* Recovery event status clear */
+	/* SPI Status clear */
 	__le32 clear;
-	/* Recovery event mask disable */
+	/* SPI Status reset */
+	__le32 reset;
+	/* SPI Event mask disable */
 	__le32 mask0;
-	/* Recovery event mask re-enable */
+	/* SPI Event mask re-enable */
 	__le32 mask1;
 
-	/* Timestamp */
+	/* SPI Timestamp */
 	union dw1000_rx_time time;
-	/* Timestamp info */
+	/* SPI Timestamp info */
 	struct dw1000_tsinfo tsinfo;
-	/* Frame quality */
+	/* SPI Frame quality */
 	struct dw1000_rx_fqual fqual;
-	/* Time tracking */
+	/* SPI Time tracking */
 	union dw1000_rx_ttcko ttcko;
 	union dw1000_rx_ttcki ttcki;
 
@@ -852,14 +987,14 @@ struct dw1000_rx {
 	struct dw1000_spi_transfers spi_ttcko;
 	struct dw1000_spi_transfers spi_ttcki;
 	/* System status transfer set */
-	struct dw1000_spi_transfers spi_sys_status;
-	/* Digital diagnostics transfer set */
-	struct dw1000_spi_transfers spi_dig_diag;
+	struct dw1000_spi_transfers spi_status;
 
 	/* Data SPI message */
 	struct spi_message spi_data;
 	/* Data buffer SPI transfer set */
 	struct dw1000_spi_transfers spi_buffer;
+	/* System status clear transfer set */
+	struct dw1000_spi_transfers spi_clear;
 	/* Host buffer toggle SPI transfer set */
 	struct dw1000_spi_transfers spi_sys_ctrl;
 
@@ -867,14 +1002,14 @@ struct dw1000_rx {
 	struct spi_message spi_rcvr;
 	/* Event mask transfer set */
 	struct dw1000_spi_transfers spi_mask0;
-	/* Status clear transfer set */
-	struct dw1000_spi_transfers spi_status;
-	/* Event mask transfer set */
-	struct dw1000_spi_transfers spi_mask1;
+	/* Status reset transfer set */
+	struct dw1000_spi_transfers spi_reset;
 	/* Buffer toggle transfer set */
 	struct dw1000_spi_transfers spi_hrbpt;
-	/* RX Enable transfer set */
-	struct dw1000_spi_transfers spi_rxena;
+	/* Event mask transfer set */
+	struct dw1000_spi_transfers spi_mask1;
+	/* System status transfer set */
+	struct dw1000_spi_transfers spi_systat;
 };
 
 /* SAR descriptor */
@@ -882,7 +1017,7 @@ struct dw1000_sar {
 	/* Voltage and Temperature */
 	union dw1000_sarl adc;
 
-	/* Control constants */
+	/* SPI Control constants */
 	uint8_t ctrl_a1;
 	uint8_t ctrl_b1;
 	uint8_t ctrl_b2;
@@ -891,7 +1026,7 @@ struct dw1000_sar {
 
 	/* SAR SPI message */
 	struct spi_message spi_msg;
-	/* Undocumented SAR control set */
+	/* SARC control set */
 	struct dw1000_spi_transfers spi_sarc_a1;
 	struct dw1000_spi_transfers spi_sarc_b1;
 	struct dw1000_spi_transfers spi_sarc_b2;
@@ -912,23 +1047,102 @@ struct dw1000_ptp {
 	struct ptp_clock_info info;
 	/* High resolution time counter */
 	struct hires_counter tc;
+	/* Sync timer */
+	struct timer_list timer;
 };
 
-/* Calibration profile name length */
-#define DW1000_CALIB_ID_LEN 16
+/* Statistics items */
+enum {
+	DW1000_STATS_RX_FRAME,
+	DW1000_STATS_TX_FRAME,
+	DW1000_STATS_RX_ERROR,
+	DW1000_STATS_TX_ERROR,
+	DW1000_STATS_IRQ_COUNT,
+	DW1000_STATS_SPI_ERROR,
+	DW1000_STATS_RX_RESET,
+	DW1000_STATS_RX_RESYNC,
+	DW1000_STATS_RX_HSRBP,
+	DW1000_STATS_RX_OVRR,
+	DW1000_STATS_RX_DFR,
+	DW1000_STATS_RX_FCG,
+	DW1000_STATS_RX_FCE,
+	DW1000_STATS_RX_LDEDONE,
+	DW1000_STATS_RX_KPI_ERROR,
+	DW1000_STATS_RX_STAMP_ERROR,
+	DW1000_STATS_RX_FRAME_REP,
+	DW1000_STATS_TX_RETRY,
+	DW1000_STATS_SNR_REJECT,
+	DW1000_STATS_FPR_REJECT,
+	DW1000_STATS_NOISE_REJECT,
+	DW1000_STATS_HARD_RESET,
+	DW1000_STATS_COUNT
+};
 
-/* Calibration profile */
-struct dw1000_calib {
-	/* Name */
-	char id[DW1000_CALIB_ID_LEN];
-	/* Channel */
-	uint8_t ch;
-	/* PRF */
-	uint8_t prf;
-	/* ANTD */
-	uint16_t antd;
-	/* Tx Power */
-	uint32_t power;
+/* Statistics */
+struct dw1000_stats {
+	/* Statistics worker */
+	struct delayed_work work;
+	/* Log interval */
+	unsigned interval;
+	/* Total stats */
+	unsigned count[DW1000_STATS_COUNT];
+	/* Reported stats */
+	unsigned reported[DW1000_STATS_COUNT];
+};
+
+/* Pending work bits */
+enum {
+	DW1000_INIT_WORK       = BIT(0),
+	DW1000_KILL_WORK       = BIT(1),
+	DW1000_TX_WORK	       = BIT(2),
+	DW1000_IRQ_WORK        = BIT(3),
+	DW1000_ADC_WORK        = BIT(4),
+	DW1000_PTP_WORK        = BIT(5),
+	DW1000_TIMER_WORK      = BIT(6),
+	DW1000_STACK_WORK      = BIT(7),
+	DW1000_CONFIG_WORK     = BIT(8),
+	DW1000_ERROR_WORK      = BIT(9),
+};
+
+/* State machine states */
+enum {
+	DW1000_STATE_OFF      = BIT(0),
+	DW1000_STATE_IDLE     = BIT(1),
+	DW1000_STATE_RX       = BIT(2),
+	DW1000_STATE_TX       = BIT(3),
+	DW1000_STATE_DEAD     = BIT(4),
+};
+
+#define DW1000_TX_TIMEOUT	     1000
+#define DW1000_DEFAULT_TIMEOUT	  1000000
+
+/* DW1000 state machine */
+struct dw1000_state {
+	
+	/* State machine state */
+	unsigned mstate;
+
+	/* DW1000 Status */
+	__le32 sys_status;
+	
+	/* Pending work bitmap */
+	unsigned long pending_work;
+
+	/* Error recovery count */
+	unsigned recovery_count;
+	
+	/* Stack status */
+	bool ieee802154_enabled;
+
+	/* Event handler thread */
+	struct task_struct *mthread;
+	
+	/* Wait queue */
+	wait_queue_head_t work_wq;
+	
+	/* Timers */
+	struct timer_list state_timer;
+	struct timer_list adc_timer;
 };
 
 /* DW1000 device */
@@ -939,12 +1153,6 @@ struct dw1000 {
 	struct device *dev;
 	/* IEEE 802.15.4 device */
 	struct ieee802154_hw *hw;
-	/* WPAN PHY */
-	struct wpan_phy *phy;
-
-	/* Control GPIOs */
-	int reset_gpio;
-	int power_gpio;
 
 	/* Register maps */
 	struct dw1000_regmap dev_id;
@@ -994,28 +1202,13 @@ struct dw1000 {
 	struct dw1000_calib calib[DW1000_MAX_CALIBS];
 
 	/* Calibrated voltage measurement at 3.3V */
-	uint8_t vmeas_3v3;
+	uint8_t vcalib_3v3;
 	/* Calibrated temperature measurement at 23 degC */
-	uint8_t tmeas_23c;
+	uint8_t tcalib_23c;
 
-	/* XTAL Trim */
-	uint8_t xtalt;
-	/* Channel number */
-	unsigned int channel;
-	/* Antenna delays */
-	uint16_t antd[DW1000_PRF_COUNT];
-	/* Preamble codes */
-	unsigned int pcode[DW1000_PRF_COUNT];
-	/* Transmit power */
-	uint8_t txpwr[4];
-	/* Pulse repetition frequency */
-	enum dw1000_prf prf;
-	/* Data rate */
-	enum dw1000_rate rate;
-	/* Preamble symbol repetitions */
-	enum dw1000_txpsr txpsr;
-	/* Smart power control enabled */
-	bool smart_power;
+	/* Control GPIOs */
+	int reset_gpio;
+	int power_gpio;
 
 	/* Signal to Noise Ratio indicator threshold */
 	uint16_t snr_threshold;
@@ -1023,30 +1216,30 @@ struct dw1000 {
 	uint16_t fpr_threshold;
 	/* Link noise indicator threshold */
 	uint16_t noise_threshold;
-	/* Receive overrun state */
-	unsigned int rx_overruns;
-	/* Last seen RX timestamp */
-	uint64_t rx_timestamp[2];
-	/* Number of RXs with sync */
-	uint32_t rx_sync_cnt;
 
-	/* Transmit lock */
-	spinlock_t tx_lock;
+#ifdef DW1000_ERROR_INJECT
+	/* Error injection */
+	int inject_error;
+	int inject_value;
+#endif /* DW1000_ERROR_INJECT */
+
+	/* State machine */
+	struct dw1000_state stm;
+	/* System config */
+	struct dw1000_config cfg;
 	/* Transmit descriptor */
 	struct dw1000_tx tx;
 	/* Receive descriptor */
 	struct dw1000_rx rx;
 	/* SAR descriptor */
 	struct dw1000_sar sar;
-
 	/* PTP clock */
 	struct dw1000_ptp ptp;
+	/* Error stats */
+	struct dw1000_stats stats;
 
 	/* Hardware monitor */
 	struct device *hwmon;
-
-	/* Backround worker */
-	struct delayed_work background_work;
 };
 
 /**
@@ -1055,12 +1248,11 @@ struct dw1000 {
  * @dev:		Generic device
  * @return:		DW1000 device
  */
-static __always_inline struct dw1000 * to_dw1000(struct device *dev)
+static __always_inline struct dw1000 * dev_to_dw1000(struct device *dev)
 {
 	struct spi_device *spi = to_spi_device(dev);
 	struct ieee802154_hw *hw = spi_get_drvdata(spi);
 	struct dw1000 *dw = hw->priv;
-
 	return dw;
 }
 
