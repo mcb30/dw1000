@@ -1,4 +1,5 @@
 (fp_lib_table
   (lib (name _div)(type KiCad)(uri lib/cvra/footprints/_div.pretty)(options "")(descr ""))
-  (lib (name pihat)(type KiCad)(uri lib/pihat)(options "")(descr ""))
+  (lib (name pihat)(type KiCad)(uri ${KIPRJMOD}/lib/pihat)(options "")(descr ""))
+  (lib (name pitail)(type KiCad)(uri ${KIPRJMOD}/lib/pitail)(options "")(descr ""))
 )
