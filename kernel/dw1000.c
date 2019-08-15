@@ -2,6 +2,7 @@
  * DecaWave DW1000 IEEE 802.15.4 UWB wireless driver
  *
  * Copyright (C) 2018 Michael Brown <mbrown@fensystems.co.uk>
+ * Copyright (C) 2019 Petri Mattila <petri.mattila@unipart.io>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -26,20 +27,21 @@
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
 #include <linux/regmap.h>
+#include <uapi/linux/sched/types.h>
+#include <linux/kthread.h>
+#include <linux/sched.h>
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
 #include <net/mac802154.h>
 
-#include "dw1000.h"
+/* Enable error injection */
+#define DW1000_ERROR_INJECT
 
 /* Enable GPIO controlled LEDs */
 #define DW1000_GPIO_LEDS
 
-/* Enable DW1000 voltage sanity check */
-#undef DW1000_VOLTAGE_CHECK
-
-/* Enable DW1000 sync lost warnings */
-#undef DW1000_SYNC_LOST_WARN
+#include "dw1000.h"
+#include "inject.h"
 
 
 /******************************************************************************
@@ -55,9 +57,84 @@ MODULE_PARM_DESC(tsinfo, "Timestamp information enable flags");
 
 /******************************************************************************
  *
+ * Forward declarations
+ *
+ */
+
+static int dw1000_reset(struct dw1000 *dw);
+static int dw1000_enable(struct dw1000 *dw);
+static int dw1000_disable(struct dw1000 *dw);
+static int dw1000_poweron(struct dw1000 *dw);
+static int dw1000_poweroff(struct dw1000 *dw);
+
+static __always_inline void
+dw1000_set_state(struct dw1000 *dw, unsigned state);
+static __always_inline void
+dw1000_set_state_timeout(struct dw1000 *dw, unsigned state, unsigned us);
+
+static void dw1000_state_timer_handler(struct timer_list *timer);
+static void dw1000_adc_timer_handler(struct timer_list *timer);
+static void dw1000_ptp_timer_handler(struct timer_list *timer);
+
+static int dw1000_event_thread(void *data);
+
+static void dw1000_enqueue(struct dw1000 *dw, unsigned long work);
+static void dw1000_enqueue_wait(struct dw1000 *dw, unsigned long work);
+static void dw1000_enqueue_irq(struct dw1000 *dw);
+
+static inline void dw1000_stats_inc(struct dw1000 *dw, int id);
+
+
+/******************************************************************************
+ *
  * Enumeration conversions
  *
  */
+
+/* Statistics items */
+#define STATS_ITEM(name)   [DW1000_STATS_ ## name] = #name
+static const char * dw1000_stats[] = {
+	STATS_ITEM(RX_FRAME),
+	STATS_ITEM(TX_FRAME),
+	STATS_ITEM(RX_ERROR),
+	STATS_ITEM(TX_ERROR),
+	STATS_ITEM(IRQ_COUNT),
+	STATS_ITEM(SPI_ERROR),
+	STATS_ITEM(RX_RESET),
+	STATS_ITEM(RX_RESYNC),
+	STATS_ITEM(RX_HSRBP),
+	STATS_ITEM(RX_OVRR),
+	STATS_ITEM(RX_DFR),
+	STATS_ITEM(RX_FCG),
+	STATS_ITEM(RX_FCE),
+	STATS_ITEM(RX_LDEDONE),
+	STATS_ITEM(RX_KPI_ERROR),
+	STATS_ITEM(RX_STAMP_ERROR),
+	STATS_ITEM(RX_FRAME_REP),
+	STATS_ITEM(TX_RETRY),
+	STATS_ITEM(SNR_REJECT),
+	STATS_ITEM(FPR_REJECT),
+	STATS_ITEM(NOISE_REJECT),
+	STATS_ITEM(HARD_RESET),
+};
+
+#ifdef DW1000_ERROR_INJECT
+/* Error injection items */
+#define INJECT_ITEM(name)   [ERROR_INJECT_ ## name] = #name
+const char * dw1000_inject_items[] = {
+	INJECT_ITEM(NONE),
+	INJECT_ITEM(STATE_DELAY),
+	INJECT_ITEM(STATE_SYS_STATUS),
+	INJECT_ITEM(TX_DELAY),
+	INJECT_ITEM(TX_SPI_DATA),
+	INJECT_ITEM(TX_SPI_INFO),
+	INJECT_ITEM(RX_DELAY),
+	INJECT_ITEM(RX_SYS_STATUS),
+	INJECT_ITEM(SPI_RD_ERROR),
+	INJECT_ITEM(SPI_WR_ERROR),
+	INJECT_ITEM(CONFIG_ERROR),
+};
+#endif /* DW1000_ERROR_INJECT */
 
 /* Pulse repetition frequency values */
 static const unsigned int dw1000_prfs[] = {
@@ -135,6 +212,7 @@ static int dw1000_lookup_txpsr(unsigned int txpsr)
 	return -EINVAL;
 }
 
+
 /******************************************************************************
  *
  * Register access
@@ -173,8 +251,8 @@ static void dw1000_init_transfers(struct spi_message *msg,
 
 	/* Toggle chip select for this transfer set if required */
 	if (!list_empty(&msg->transfers)) {
-		previous = list_last_entry(&msg->transfers, struct spi_transfer,
-					   transfer_list);
+		previous = list_last_entry(&msg->transfers,
+					   struct spi_transfer, transfer_list);
 		previous->cs_change = 1;
 	}
 
@@ -243,6 +321,8 @@ static void dw1000_init_write(struct spi_message *msg,
 static int dw1000_read(struct dw1000 *dw, unsigned int file,
 		       unsigned int offset, void *data, size_t len)
 {
+	int rc;
+	
 	struct {
 		struct spi_message msg;
 		struct dw1000_spi_transfers xfers;
@@ -253,7 +333,12 @@ static int dw1000_read(struct dw1000 *dw, unsigned int file,
 	spi_message_init_no_memset(&read.msg);
 	dw1000_init_read(&read.msg, &read.xfers, file, offset, data, len);
 
-	return spi_sync(dw->spi, &read.msg);
+	/* SPI transaction */
+	rc = spi_sync(dw->spi, &read.msg);
+
+	INJECT_ERROR(dw, SPI_RD_ERROR, rc);
+
+	return rc;
 }
 
 /**
@@ -269,6 +354,8 @@ static int dw1000_read(struct dw1000 *dw, unsigned int file,
 static int dw1000_write(struct dw1000 *dw, unsigned int file,
 			unsigned int offset, const void *data, size_t len)
 {
+	int rc;
+	
 	struct {
 		struct spi_message msg;
 		struct dw1000_spi_transfers xfers;
@@ -279,8 +366,14 @@ static int dw1000_write(struct dw1000 *dw, unsigned int file,
 	spi_message_init_no_memset(&write.msg);
 	dw1000_init_write(&write.msg, &write.xfers, file, offset, data, len);
 
-	return spi_sync(dw->spi, &write.msg);
+	/* SPI transaction */
+	rc = spi_sync(dw->spi, &write.msg);
+
+	INJECT_ERROR(dw, SPI_WR_ERROR, rc);
+
+	return rc;
 }
+
 
 /******************************************************************************
  *
@@ -304,6 +397,7 @@ static int dw1000_regmap_write(void *context, const void *data, size_t len)
 	/* Extract offset */
 	if (len < sizeof(*offset))
 		return -EINVAL;
+	
 	offset = data;
 	data += sizeof(*offset);
 	len -= sizeof(*offset);
@@ -472,53 +566,6 @@ static int dw1000_regmap_init(struct dw1000 *dw)
 	return 0;
 }
 
-/******************************************************************************
- *
- * SAR ADC access
- *
- */
-
-/**
- * dw1000_sar_prepare() - Prepare SAR SPI message
- *
- * @dw:			DW1000 device
- * @return:		0 on success or -errno
- */
-static int dw1000_sar_prepare(struct dw1000 *dw)
-{
-	struct dw1000_sar *sar = &dw->sar;
-
-	/* Initialise SAR descriptor */
-	memset(sar, 0, sizeof(*sar));
-
-	/* Set contant values used in SPI transfer */
-	sar->ctrl_a1  = DW1000_RF_SENSOR_SARC_A1;
-	sar->ctrl_b1  = DW1000_RF_SENSOR_SARC_B1;
-	sar->ctrl_b2  = DW1000_RF_SENSOR_SARC_B2;
-	sar->ctrl_ena = DW1000_TC_SARC_CTRL;
-	sar->ctrl_dis = 0;
-
-	/* Prepare SAR SPI message */
-	spi_message_init_no_memset(&sar->msg);
-	dw1000_init_write(&sar->msg, &sar->sarc_a1, DW1000_RF_CONF,
-			  DW1000_RF_SENSOR_SARC_A, &sar->ctrl_a1, sizeof(sar->ctrl_a1));
-	dw1000_init_write(&sar->msg, &sar->sarc_b1, DW1000_RF_CONF,
-			  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b1, sizeof(sar->ctrl_b1));
-	dw1000_init_write(&sar->msg, &sar->sarc_b2, DW1000_RF_CONF,
-			  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b2, sizeof(sar->ctrl_b2));
-	dw1000_init_write(&sar->msg, &sar->sarc_ena, DW1000_TX_CAL,
-			  DW1000_TC_SARC, &sar->ctrl_ena, sizeof(sar->ctrl_ena));
-
-	/* Keep the ADC on for a few us */
-	sar->sarc_ena.data.delay_usecs = DW1000_SAR_WAIT_US;
-
-	dw1000_init_write(&sar->msg, &sar->sarc_dis, DW1000_TX_CAL,
-			  DW1000_TC_SARC, &sar->ctrl_dis, sizeof(sar->ctrl_dis));
-	dw1000_init_read(&sar->msg, &sar->sarl, DW1000_TX_CAL,
-			 DW1000_TC_SARL, &sar->adc.raw, sizeof(sar->adc.raw));
-
-	return 0;
-}
 
 /******************************************************************************
  *
@@ -534,8 +581,9 @@ static int dw1000_sar_prepare(struct dw1000 *dw)
  * @data:		Data to fill in
  * @return:		0 on success or -errno
  */
-static int dw1000_otp_read(struct dw1000 *dw, unsigned int address,
-			   __le32 *data) {
+static int dw1000_otp_read(struct dw1000 *dw,
+			   unsigned int address, __le32 *data)
+{
 	int otp_ctrl;
 	int rc;
 
@@ -635,6 +683,7 @@ static int dw1000_otp_regmap_init(struct dw1000 *dw)
 
 	return 0;
 }
+
 
 /******************************************************************************
  *
@@ -848,21 +897,25 @@ enum dw1000_configuration_change {
 	DW1000_CONFIGURE_XTAL_TRIM	= BIT(7),
 	DW1000_CONFIGURE_TX_POWER	= BIT(8),
 	DW1000_CONFIGURE_SMART_POWER	= BIT(9),
+	DW1000_CONFIGURE_PAN_ID         = BIT(10),
+	DW1000_CONFIGURE_SHORT_ADDR     = BIT(11),
+	DW1000_CONFIGURE_IEEE_ADDR      = BIT(12),
+	DW1000_CONFIGURE_FRAME_FILTER   = BIT(13),
 };
 
 /**
- * dw1000_pcode() - Calculate preamble code
+ * dw1000_get_pcode() - Calculate preamble code
  *
  * @dw:			DW1000 device
  * @return:		Preamble code
  */
-static unsigned int dw1000_pcode(struct dw1000 *dw)
+static unsigned int dw1000_get_pcode(struct dw1000_config *cfg)
 {
-	unsigned int pcode = dw->pcode[dw->prf];
+	unsigned int pcode = cfg->pcode[cfg->prf];
 	unsigned long pcodes;
 
 	/* Use explicitly set preamble code if configured */
-	pcodes = dw1000_channel_configs[dw->channel].pcodes[dw->prf];
+	pcodes = dw1000_channel_configs[cfg->channel].pcodes[cfg->prf];
 	if (BIT(pcode) & pcodes)
 		return pcode;
 
@@ -871,29 +924,28 @@ static unsigned int dw1000_pcode(struct dw1000 *dw)
 }
 
 /**
- * dw1000_txpsr() - Calculate preamble symbol repetitions
+ * dw1000_get_txpsr() - Calculate preamble symbol repetitions
  *
  * @dw:			DW1000 device
  * @return:		Preamble symbol repetitions
  */
-static enum dw1000_txpsr dw1000_txpsr(struct dw1000 *dw)
+static unsigned int dw1000_get_txpsr(struct dw1000_config *cfg)
 {
-	/* Use explicitly set preamble symbol repetitions if configured */
-	if (dw->txpsr != DW1000_TXPSR_DEFAULT)
-		return dw->txpsr;
+	/* Use default for the current data rate */
+	if (cfg->txpsr == DW1000_TXPSR_DEFAULT)
+		return dw1000_rate_configs[cfg->rate].txpsr;
 
-	/* Otherwise, use default for the current data rate */
-	return dw1000_rate_configs[dw->rate].txpsr;
+	return cfg->txpsr;
 }
 
 /**
- * dw1000_reconfigure() - Reconfigure radio parameters
+ * dw1000_load_config() - Change radio parameters
  *
  * @dw:			DW1000 device
  * @changed:		Changed parameter bitmask
  * @return:		0 on success or -errno
  */
-static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
+static int dw1000_load_config(struct dw1000 *dw)
 {
 	const struct dw1000_channel_config *channel_cfg;
 	const struct dw1000_pcode_config *pcode_cfg;
@@ -901,224 +953,288 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
 	const struct dw1000_rate_config *rate_cfg;
 	const struct dw1000_txpsr_config *txpsr_cfg;
 	const struct dw1000_fixed_config *fixed_cfg;
-	uint16_t lde_repc;
-	uint16_t lde_rxantd;
-	unsigned int channel;
+	struct dw1000_config *cfg = &dw->cfg;
+	unsigned int changed;
 	unsigned int pcode;
-	unsigned int xtalt;
-	enum dw1000_prf prf;
-	enum dw1000_rate rate;
-	enum dw1000_txpsr txpsr;
-	bool smart_power;
-	int mask;
-	int value;
-	int rc;
+	unsigned int txpsr;
+	int value, mask;
+	int rc = 0;
+
+	/* Locked while working */
+	mutex_lock(&cfg->mutex);
+
+	INJECT_ERROR(dw, CONFIG_ERROR, rc, error);
+	
+	/* Changed configrations */
+	changed = cfg->pending;
 
 	/* Look up current configurations */
-	xtalt = dw->xtalt;
-	channel = dw->channel;
-	prf = dw->prf;
-	rate = dw->rate;
-	pcode = dw1000_pcode(dw);
-	txpsr = dw1000_txpsr(dw);
-	smart_power = dw->smart_power;
-	channel_cfg = &dw1000_channel_configs[channel];
+	txpsr = dw1000_get_txpsr(cfg);
+	pcode = dw1000_get_pcode(cfg);
 	pcode_cfg = &dw1000_pcode_configs[pcode];
-	prf_cfg = &dw1000_prf_configs[prf];
-	rate_cfg = &dw1000_rate_configs[rate];
+	prf_cfg = &dw1000_prf_configs[cfg->prf];
+	rate_cfg = &dw1000_rate_configs[cfg->rate];
 	txpsr_cfg = &dw1000_txpsr_configs[txpsr];
+	channel_cfg = &dw1000_channel_configs[cfg->channel];
 	fixed_cfg = &dw1000_fixed_config;
 
+	/* Set channel also in the 802.15.4 stack */
+	dw->hw->phy->current_channel = cfg->channel;
+	
 	/* Calculate inter-frame spacing */
-	dw->phy->symbol_duration = (rate_cfg->tdsym_ns / 1000);
-	if (!dw->phy->symbol_duration)
-		dw->phy->symbol_duration = 1;
-	dw->phy->lifs_period =
+	dw->hw->phy->symbol_duration = (rate_cfg->tdsym_ns / 1000);
+	if (!dw->hw->phy->symbol_duration)
+		dw->hw->phy->symbol_duration = 1;
+	dw->hw->phy->lifs_period =
 		((IEEE802154_LIFS_PERIOD * rate_cfg->tdsym_ns) / 1000);
-	dw->phy->sifs_period =
+	dw->hw->phy->sifs_period =
 		((IEEE802154_SIFS_PERIOD * rate_cfg->tdsym_ns) / 1000);
+
+	/* If needed, set TX_POWER to default */
+	if (((changed & DW1000_CONFIGURE_TX_POWER) == 0) &&
+	    (changed & (DW1000_CONFIGURE_CHANNEL | DW1000_CONFIGURE_PRF |
+			DW1000_CONFIGURE_SMART_POWER))) {
+		if (cfg->smart_power) {
+			cfg->txpwr[0] =	channel_cfg->tx_power[cfg->prf][0];
+			cfg->txpwr[1] =	channel_cfg->tx_power[cfg->prf][1];
+			cfg->txpwr[2] = channel_cfg->tx_power[cfg->prf][2];
+			cfg->txpwr[3] =	channel_cfg->tx_power[cfg->prf][3];
+		} else {
+			cfg->txpwr[0] = 0;
+			cfg->txpwr[1] = channel_cfg->tx_power[cfg->prf][0];
+			cfg->txpwr[2] = channel_cfg->tx_power[cfg->prf][0];
+			cfg->txpwr[3] = 0;
+		}
+		changed |= DW1000_CONFIGURE_TX_POWER;
+	}
 
 	/* SYS_CFG register */
 	if (changed & (DW1000_CONFIGURE_RATE | DW1000_CONFIGURE_SMART_POWER)) {
 		mask = (DW1000_SYS_CFG_DIS_STXP | DW1000_SYS_CFG_RXM110K);
-		value = ((smart_power ? 0 : DW1000_SYS_CFG_DIS_STXP) |
-			 ((rate == DW1000_RATE_110K) ?
+		value = ((cfg->smart_power ? 0 : DW1000_SYS_CFG_DIS_STXP) |
+			 ((cfg->rate == DW1000_RATE_110K) ?
 			  DW1000_SYS_CFG_RXM110K : 0));
 		if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, mask,
 					     value)) != 0)
-			return rc;
+			goto error;
 	}
 
 	/* TX_FCTRL registers */
 	if (changed & DW1000_CONFIGURE_RATE) {
 		mask = DW1000_TX_FCTRL1_TXBR_MASK;
-		value = DW1000_TX_FCTRL1_TXBR(rate);
+		value = DW1000_TX_FCTRL1_TXBR(cfg->rate);
 		if ((rc = regmap_update_bits(dw->tx_fctrl.regs,
 					     DW1000_TX_FCTRL1,
 					     mask, value)) != 0)
-			return rc;
+			goto error;
 	}
 	if (changed & (DW1000_CONFIGURE_PRF | DW1000_CONFIGURE_RATE |
 		       DW1000_CONFIGURE_TXPSR)) {
 		mask = (DW1000_TX_FCTRL2_TXPRF_MASK |
 			DW1000_TX_FCTRL2_TXPSR_MASK);
-		value = (DW1000_TX_FCTRL2_TXPRF(prf) |
+		value = (DW1000_TX_FCTRL2_TXPRF(cfg->prf) |
 			 DW1000_TX_FCTRL2_TXPSR(txpsr));
 		if ((rc = regmap_update_bits(dw->tx_fctrl.regs,
 					     DW1000_TX_FCTRL2,
 					     mask, value)) != 0)
-			return rc;
+			goto error;
 	}
 
 	/* TX_ANTD register */
 	if (changed & (DW1000_CONFIGURE_PRF | DW1000_CONFIGURE_ANTD)) {
 		if ((rc = regmap_write(dw->tx_antd.regs, 0,
-				       dw->antd[prf])) != 0)
-			return rc;
+				       cfg->antd[cfg->prf])) != 0)
+			goto error;
 	}
 
 	/* TX_POWER register */
-	if (changed & (DW1000_CONFIGURE_CHANNEL | DW1000_CONFIGURE_PRF |
-		       DW1000_CONFIGURE_SMART_POWER)) {
-		if (smart_power) {
-			memcpy(dw->txpwr, channel_cfg->tx_power[prf], sizeof(dw->txpwr));
-		} else {
-			dw->txpwr[0] = dw->txpwr[3] = 0;
-			dw->txpwr[1] = dw->txpwr[2] = channel_cfg->tx_power[prf][0];
-		}
-	}
-	if (changed & (DW1000_CONFIGURE_CHANNEL | DW1000_CONFIGURE_PRF |
-		       DW1000_CONFIGURE_TX_POWER | DW1000_CONFIGURE_SMART_POWER)) {
-		if ((rc = regmap_raw_write(dw->tx_power.regs, 0, dw->txpwr,
-					   sizeof(dw->txpwr))) != 0)
-			return rc;
+	if (changed & DW1000_CONFIGURE_TX_POWER) {
+		if ((rc = regmap_raw_write(dw->tx_power.regs, 0, cfg->txpwr,
+					   sizeof(cfg->txpwr))) != 0)
+			goto error;
 	}
 
 	/* CHAN_CTRL register */
-	if (changed & (DW1000_CONFIGURE_CHANNEL | DW1000_CONFIGURE_PCODE |
+	if (changed & (DW1000_CONFIGURE_CHANNEL |
+		       DW1000_CONFIGURE_PCODE |
 		       DW1000_CONFIGURE_PRF)) {
 		mask = (DW1000_CHAN_CTRL_TX_CHAN_MASK |
 			DW1000_CHAN_CTRL_RX_CHAN_MASK |
 			DW1000_CHAN_CTRL_RXPRF_MASK |
 			DW1000_CHAN_CTRL_TX_PCODE_MASK |
 			DW1000_CHAN_CTRL_RX_PCODE_MASK);
-		value = (DW1000_CHAN_CTRL_TX_CHAN(channel) |
-			 DW1000_CHAN_CTRL_RX_CHAN(channel) |
-			 DW1000_CHAN_CTRL_RXPRF(prf) |
+		value = (DW1000_CHAN_CTRL_TX_CHAN(cfg->channel) |
+			 DW1000_CHAN_CTRL_RX_CHAN(cfg->channel) |
+			 DW1000_CHAN_CTRL_RXPRF(cfg->prf) |
 			 DW1000_CHAN_CTRL_TX_PCODE(pcode) |
 			 DW1000_CHAN_CTRL_RX_PCODE(pcode));
-		if ((rc = regmap_update_bits(dw->chan_ctrl.regs, 0, mask,
-					     value)) != 0)
-			return rc;
+		if ((rc = regmap_update_bits(dw->chan_ctrl.regs, 0,
+					     mask, value)) != 0)
+			goto error;
 	}
 
 	/* AGC_CTRL registers */
 	if (changed & DW1000_CONFIGURE_PRF) {
-		if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_TUNE1,
+		if ((rc = regmap_raw_write(dw->agc_ctrl.regs,
+					   DW1000_AGC_TUNE1,
 					   prf_cfg->agc_tune1,
 					   sizeof(prf_cfg->agc_tune1))) != 0)
-			return rc;
+			goto error;
 	}
 	if (changed & DW1000_CONFIGURE_FIXED) {
-		if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_TUNE2,
+		if ((rc = regmap_raw_write(dw->agc_ctrl.regs,
+					   DW1000_AGC_TUNE2,
 					   fixed_cfg->agc_tune2,
 					   sizeof(fixed_cfg->agc_tune2))) != 0)
-			return rc;
-		if ((rc = regmap_raw_write(dw->agc_ctrl.regs, DW1000_AGC_TUNE3,
+			goto error;
+		if ((rc = regmap_raw_write(dw->agc_ctrl.regs,
+					   DW1000_AGC_TUNE3,
 					   fixed_cfg->agc_tune3,
 					   sizeof(fixed_cfg->agc_tune3))) != 0)
-			return rc;
+			goto error;
 	}
 
 	/* DRX_CONF registers */
 	if (changed & DW1000_CONFIGURE_RATE) {
 		if ((rc = regmap_write(dw->drx_conf.regs, DW1000_DRX_TUNE0B,
 				       rate_cfg->drx_tune0b)) != 0)
-			return rc;
+			goto error;
 	}
 	if (changed & DW1000_CONFIGURE_PRF) {
 		if ((rc = regmap_write(dw->drx_conf.regs, DW1000_DRX_TUNE1A,
 				       prf_cfg->drx_tune1a)) != 0)
-			return rc;
+			goto error;
 	}
 	if (changed & DW1000_CONFIGURE_TXPSR) {
 		if ((rc = regmap_write(dw->drx_conf.regs, DW1000_DRX_TUNE1B,
 				       txpsr_cfg->drx_tune1b)) != 0)
-			return rc;
+			goto error;
 	}
 	if (changed & (DW1000_CONFIGURE_PRF | DW1000_CONFIGURE_RATE)) {
 		if ((rc = regmap_raw_write(dw->drx_conf.regs, DW1000_DRX_TUNE2,
-					   rate_cfg->drx_tune2[prf],
-					   sizeof(rate_cfg->
-						  drx_tune2[prf]))) != 0)
-			return rc;
+				rate_cfg->drx_tune2[cfg->prf],
+				sizeof(rate_cfg->drx_tune2[cfg->prf]))) != 0)
+			goto error;
 	}
 	if (changed & DW1000_CONFIGURE_RATE) {
 		if ((rc = regmap_write(dw->drx_conf.regs, DW1000_DRX_TUNE4H,
 				       txpsr_cfg->drx_tune4h)) != 0)
-			return rc;
+			goto error;
 	}
 
 	/* RF_CONF registers */
 	if (changed & DW1000_CONFIGURE_CHANNEL) {
 		if ((rc = regmap_raw_write(dw->rf_conf.regs, DW1000_RF_TXCTRL,
 					   channel_cfg->rf_txctrl,
-					   sizeof(channel_cfg->rf_txctrl))) !=0)
-			return rc;
+					   sizeof(channel_cfg->rf_txctrl))) != 0)
+			goto error;
 		if ((rc = regmap_write(dw->rf_conf.regs, DW1000_RF_RXCTRLH,
 				       channel_cfg->rf_rxctrlh)) != 0)
-			return rc;
+			goto error;
 	}
 
 	/* TX_CAL registers */
 	if (changed & DW1000_CONFIGURE_CHANNEL) {
 		if ((rc = regmap_write(dw->tx_cal.regs, DW1000_TC_PGDELAY,
 				       channel_cfg->tc_pgdelay)) != 0)
-			return rc;
+			goto error;
 	}
 
 	/* FS_CTRL registers */
 	if (changed & DW1000_CONFIGURE_CHANNEL) {
 		if ((rc = regmap_raw_write(dw->fs_ctrl.regs, DW1000_FS_PLLCFG,
 					   channel_cfg->fs_pllcfg,
-					   sizeof(channel_cfg->fs_pllcfg))) !=0)
-			return rc;
+					   sizeof(channel_cfg->fs_pllcfg))) != 0)
+			goto error;
 		if ((rc = regmap_write(dw->fs_ctrl.regs, DW1000_FS_PLLTUNE,
 				       channel_cfg->fs_plltune)) != 0)
-			return rc;
+			goto error;
 	}
 	if (changed & DW1000_CONFIGURE_XTAL_TRIM) {
 		if ((rc = regmap_update_bits(dw->fs_ctrl.regs, DW1000_FS_XTALT,
 					     DW1000_FS_XTALT_XTALT_MASK,
-					     xtalt)) != 0)
-			return rc;
+					     cfg->xtalt)) != 0)
+			goto error;
 	}
 
 	/* LDE_IF registers */
 	if (changed & (DW1000_CONFIGURE_PRF | DW1000_CONFIGURE_ANTD)) {
-		lde_rxantd = cpu_to_le16(dw->antd[prf]);
-		if ((rc = regmap_raw_write(dw->lde_if.regs, DW1000_LDE_RXANTD,
-					   &lde_rxantd,
+		uint16_t lde_rxantd = cpu_to_le16(cfg->antd[cfg->prf]);
+		if ((rc = regmap_raw_write(dw->lde_if.regs,
+					   DW1000_LDE_RXANTD, &lde_rxantd,
 					   sizeof(lde_rxantd))) != 0)
-			return rc;
+			goto error;
 	}
 	if (changed & DW1000_CONFIGURE_PRF) {
-		if ((rc = regmap_raw_write(dw->lde_if.regs, DW1000_LDE_CFG2,
-					   prf_cfg->lde_cfg2,
+		if ((rc = regmap_raw_write(dw->lde_if.regs,
+					   DW1000_LDE_CFG2, prf_cfg->lde_cfg2,
 					   sizeof(prf_cfg->lde_cfg2))) != 0)
-			return rc;
+			goto error;
 	}
 	if (changed & (DW1000_CONFIGURE_PCODE | DW1000_CONFIGURE_RATE)) {
-		lde_repc = pcode_cfg->lde_repc;
-		if (rate == DW1000_RATE_110K)
+		uint16_t lde_repc = pcode_cfg->lde_repc;
+		if (cfg->rate == DW1000_RATE_110K)
 			lde_repc >>= 3;
 		cpu_to_le16s(&lde_repc);
-		if ((rc = regmap_raw_write(dw->lde_if.regs, DW1000_LDE_REPC,
-					   &lde_repc, sizeof(lde_repc))) != 0)
-			return rc;
+		if ((rc = regmap_raw_write(dw->lde_if.regs,
+					   DW1000_LDE_REPC, &lde_repc,
+					   sizeof(lde_repc))) != 0)
+			goto error;
 	}
 
-	return 0;
+	/* IEEE 802.15.4 stack config */
+	if (changed & DW1000_CONFIGURE_PAN_ID) {
+		if ((rc = regmap_write(dw->panadr.regs,
+				       DW1000_PANADR_PAN_ID,
+				       cfg->pan_id)) != 0)
+			goto error;
+	}
+	if (changed & DW1000_CONFIGURE_SHORT_ADDR) {
+		if ((rc = regmap_write(dw->panadr.regs,
+				       DW1000_PANADR_SHORT_ADDR,
+				       cfg->short_addr)) != 0)
+			goto error;
+	}
+	if (changed & DW1000_CONFIGURE_IEEE_ADDR) {
+		if ((rc = regmap_raw_write(dw->eui.regs, 0,
+					   &cfg->ieee_addr,
+					   sizeof(cfg->ieee_addr))) != 0)
+			goto error;
+	}
+	if (changed & DW1000_CONFIGURE_FRAME_FILTER) {
+		if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0,
+					     DW1000_SYS_CFG_FF,
+					     cfg->frame_filter)) != 0)
+			goto error;
+	}
+
+	/* Mark all done */
+	cfg->pending = 0;
+	
+ error:
+	/* Record return value */
+	cfg->rc = rc;
+
+	/* Unlock configuration */
+	mutex_unlock(&cfg->mutex);
+	
+	return rc;
+}
+
+/**
+ * dw1000_reconfigure() - Reconfigure radio parameters
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static inline int dw1000_reconfigure(struct dw1000 *dw)
+{
+	struct dw1000_config *cfg = &dw->cfg;
+
+	/* Wait until work done */
+	dw1000_enqueue_wait(dw, DW1000_CONFIG_WORK);
+
+	return cfg->rc;
 }
 
 /**
@@ -1130,21 +1246,24 @@ static int dw1000_reconfigure(struct dw1000 *dw, unsigned int changed)
  */
 static int dw1000_configure_xtalt(struct dw1000 *dw, unsigned int trim)
 {
+	struct dw1000_config *cfg = &dw->cfg;
 	int rc;
-
+	
 	/* Check that trim value is supported */
 	if (trim & ~DW1000_FS_XTALT_XTALT_MASK)
 		return -EINVAL;
 
 	/* Assign new trim value */
-	dw->xtalt = trim;
-
-	/* Reconfigure channel */
-	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_XTAL_TRIM)) != 0)
-		return rc;
+	mutex_lock(&cfg->mutex);
+	cfg->pending |= DW1000_CONFIGURE_XTAL_TRIM;
+	cfg->xtalt = trim;
+	mutex_unlock(&cfg->mutex);
+	
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
 
 	dev_dbg(dw->dev, "set xtal trim %d\n", trim);
-	return 0;
+	return rc;
 }
 
 /**
@@ -1156,24 +1275,24 @@ static int dw1000_configure_xtalt(struct dw1000 *dw, unsigned int trim)
  */
 static int dw1000_configure_channel(struct dw1000 *dw, unsigned int channel)
 {
+	struct dw1000_config *cfg = &dw->cfg;
 	int rc;
-
+	
 	/* Check that channel is supported */
 	if (!(BIT(channel) & DW1000_CHANNELS))
 		return -EINVAL;
 
 	/* Record channel */
-	dw->channel = channel;
-
-	/* Set channel also in the 802.15.4 stack */
-	dw->hw->phy->current_channel = channel;
-
-	/* Reconfigure channel */
-	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_CHANNEL)) != 0)
-		return rc;
+	mutex_lock(&cfg->mutex);
+	cfg->pending |= DW1000_CONFIGURE_CHANNEL;
+	cfg->channel = channel;
+	mutex_unlock(&cfg->mutex);
+	
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
 
 	dev_dbg(dw->dev, "set channel %d\n", channel);
-	return 0;
+	return rc;
 }
 
 /**
@@ -1185,25 +1304,34 @@ static int dw1000_configure_channel(struct dw1000 *dw, unsigned int channel)
  */
 static int dw1000_configure_pcode(struct dw1000 *dw, unsigned int pcode)
 {
+	struct dw1000_config *cfg = &dw->cfg;
 	unsigned long pcodes;
 	int rc;
+	
+	/* Lock config */
+	mutex_lock(&cfg->mutex);
 
 	/* Check that preamble code is valid */
 	if (pcode) {
-		pcodes = dw1000_channel_configs[dw->channel].pcodes[dw->prf];
-		if (!(BIT(pcode) & pcodes))
+		pcodes = dw1000_channel_configs[cfg->channel].pcodes[cfg->prf];
+		if (!(BIT(pcode) & pcodes)) {
+			mutex_unlock(&cfg->mutex);
 			return -EINVAL;
+		}
 	}
 
 	/* Record preamble code */
-	dw->pcode[dw->prf] = pcode;
+	cfg->pending |= DW1000_CONFIGURE_PCODE;
+	cfg->pcode[cfg->prf] = pcode;
+	
+	/* Unlock configuration */
+	mutex_unlock(&cfg->mutex);
 
-	/* Reconfigure preamble code */
-	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_PCODE)) != 0)
-		return rc;
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
 
 	dev_dbg(dw->dev, "set preamble code %d\n", pcode);
-	return 0;
+	return rc;
 }
 
 /**
@@ -1213,20 +1341,23 @@ static int dw1000_configure_pcode(struct dw1000 *dw, unsigned int pcode)
  * @prf:		Pulse repetition frequency
  * @return:		0 on success or -errno
  */
-static int dw1000_configure_prf(struct dw1000 *dw, enum dw1000_prf prf)
+static int dw1000_configure_prf(struct dw1000 *dw, unsigned prf)
 {
+	struct dw1000_config *cfg = &dw->cfg;
 	int rc;
-
+	
 	/* Record pulse repetition frequency */
-	dw->prf = prf;
-
-	/* Reconfigure pulse repetition frequency */
-	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_PRF)) != 0)
-		return rc;
+	mutex_lock(&cfg->mutex);
+	cfg->pending |= DW1000_CONFIGURE_PRF;
+	cfg->prf = prf;
+	mutex_unlock(&cfg->mutex);
+	
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
 
 	dev_dbg(dw->dev, "set pulse repetition frequency %dMHz\n",
-		dw1000_prfs[dw->prf]);
-	return 0;
+		dw1000_prfs[prf]);
+	return rc;
 }
 
 /**
@@ -1238,21 +1369,24 @@ static int dw1000_configure_prf(struct dw1000 *dw, enum dw1000_prf prf)
  */
 static int dw1000_configure_antd(struct dw1000 *dw, unsigned int delay)
 {
+	struct dw1000_config *cfg = &dw->cfg;
 	int rc;
-
+	
 	/* Check value range */
 	if (delay & ~DW1000_ANTD_MASK)
 		return -EINVAL;
 
-	/* Record new delay */
-	dw->antd[dw->prf] = delay;
-
-	/* Reconfigure antenna delay */
-	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_ANTD)) != 0)
-		return rc;
+	/* Record new antenna delay */
+	mutex_lock(&cfg->mutex);
+	cfg->pending |= DW1000_CONFIGURE_ANTD;
+	cfg->antd[cfg->prf] = delay;
+	mutex_unlock(&cfg->mutex);
+	
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
 
 	dev_dbg(dw->dev, "set antenna delay 0x%4x\n", delay);
-	return 0;
+	return rc;
 }
 
 /**
@@ -1262,19 +1396,22 @@ static int dw1000_configure_antd(struct dw1000 *dw, unsigned int delay)
  * @rate:		Data rate
  * @return:		0 on success or -errno
  */
-static int dw1000_configure_rate(struct dw1000 *dw, enum dw1000_rate rate)
+static int dw1000_configure_rate(struct dw1000 *dw, unsigned int rate)
 {
+	struct dw1000_config *cfg = &dw->cfg;
 	int rc;
-
+	
 	/* Record data rate */
-	dw->rate = rate;
+	mutex_lock(&cfg->mutex);
+	cfg->pending |= DW1000_CONFIGURE_RATE;
+	cfg->rate = rate;
+	mutex_unlock(&cfg->mutex);
+	
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
 
-	/* Reconfigure data rate */
-	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_RATE)) != 0)
-		return rc;
-
-	dev_dbg(dw->dev, "set data rate %dkbps\n", dw1000_rates[dw->rate]);
-	return 0;
+	dev_dbg(dw->dev, "set data rate %dkbps\n", dw1000_rates[rate]);
+	return rc;
 }
 
 /**
@@ -1284,20 +1421,23 @@ static int dw1000_configure_rate(struct dw1000 *dw, enum dw1000_rate rate)
  * @txpsr:		Transmit preamble symbol repetitions
  * @return:		0 on success or -errno
  */
-static int dw1000_configure_txpsr(struct dw1000 *dw, enum dw1000_txpsr txpsr)
+static int dw1000_configure_txpsr(struct dw1000 *dw, unsigned int txpsr)
 {
+	struct dw1000_config *cfg = &dw->cfg;
 	int rc;
-
+	
 	/* Record transmit preamble symbol repetitions */
-	dw->txpsr = txpsr;
+	mutex_lock(&cfg->mutex);
+	cfg->pending |= DW1000_CONFIGURE_TXPSR;
+	cfg->txpsr = txpsr;
+	mutex_unlock(&cfg->mutex);
 
-	/* Reconfigure transmit preamble symbol repetitions */
-	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_TXPSR)) != 0)
-		return rc;
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
 
 	dev_dbg(dw->dev, "set %d preamble symbol repetitions\n",
-		dw1000_txpsrs[dw1000_txpsr(dw)]);
-	return 0;
+		dw1000_txpsrs[dw1000_get_txpsr(cfg)]);
+	return rc;
 }
 
 /**
@@ -1309,27 +1449,36 @@ static int dw1000_configure_txpsr(struct dw1000 *dw, enum dw1000_txpsr txpsr)
  */
 static int dw1000_configure_tx_power(struct dw1000 *dw, uint32_t power)
 {
+	struct dw1000_config *cfg = &dw->cfg;
 	int rc;
+	
+	/* Lock configuration */
+	mutex_lock(&cfg->mutex);
+	cfg->pending |= DW1000_CONFIGURE_TX_POWER;
 
-	/* Four byte or one byte power level */
+	/* Power levels */
 	if (power & 0xffffff00) {
-		dw->txpwr[0] = (power >>  0) & 0xff;
-		dw->txpwr[1] = (power >>  8) & 0xff;
-		dw->txpwr[2] = (power >> 16) & 0xff;
-		dw->txpwr[3] = (power >> 24) & 0xff;
+		/* Four byte power level */
+		cfg->txpwr[0] = (power >>  0) & 0xff;
+		cfg->txpwr[1] = (power >>  8) & 0xff;
+		cfg->txpwr[2] = (power >> 16) & 0xff;
+		cfg->txpwr[3] = (power >> 24) & 0xff;
 	} else {
-		dw->txpwr[0] = power;
-		dw->txpwr[1] = power;
-		dw->txpwr[2] = power;
-		dw->txpwr[3] = power;
+		/* One byte power level */
+		cfg->txpwr[0] = power;
+		cfg->txpwr[1] = power;
+		cfg->txpwr[2] = power;
+		cfg->txpwr[3] = power;
 	}
+	
+	/* Unlock configuration */
+	mutex_unlock(&cfg->mutex);
 
-	/* Reconfigure transmit power */
-	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_TX_POWER)) != 0)
-		return rc;
-
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
+	
 	dev_dbg(dw->dev, "set tx power 0x%08x\n", power);
-	return 0;
+	return rc;
 }
 
 /**
@@ -1341,18 +1490,50 @@ static int dw1000_configure_tx_power(struct dw1000 *dw, uint32_t power)
  */
 static int dw1000_configure_smart_power(struct dw1000 *dw, bool smart_power)
 {
+	struct dw1000_config *cfg = &dw->cfg;
 	int rc;
-
+	
 	/* Record smart power control */
-	dw->smart_power = smart_power;
-
-	/* Reconfigure transmit power */
-	if ((rc = dw1000_reconfigure(dw, DW1000_CONFIGURE_SMART_POWER)) != 0)
-		return rc;
+	mutex_lock(&cfg->mutex);
+	cfg->pending |= DW1000_CONFIGURE_SMART_POWER;
+	cfg->smart_power = smart_power;
+	mutex_unlock(&cfg->mutex);
+	
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
 
 	dev_dbg(dw->dev, "set smart power control %s\n",
 		(smart_power ? "on" : "off"));
-	return 0;
+	return rc;
+}
+
+/**
+ * dw1000_configure_frame_filter() - Configure hardware frame filter
+ *
+ * @dw:			DW1000 device
+ * @filter:		Filter bitmap
+ * @return:		0 on success or -errno
+ */
+static int dw1000_configure_frame_filter(struct dw1000 *dw, unsigned int filter)
+{
+	struct dw1000_config *cfg = &dw->cfg;
+	int rc;
+	
+	/* Check that filter is supported */
+	if ((filter & DW1000_SYS_CFG_FF) != filter)
+		return -EINVAL;
+
+	/* Record filter */
+	mutex_lock(&cfg->mutex);
+	cfg->pending |= DW1000_CONFIGURE_FRAME_FILTER;
+	cfg->frame_filter = filter;
+	mutex_unlock(&cfg->mutex);
+	
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
+
+	dev_dbg(dw->dev, "set frame filter 0x%04x\n", filter);
+	return rc;
 }
 
 /**
@@ -1364,8 +1545,9 @@ static int dw1000_configure_smart_power(struct dw1000 *dw, bool smart_power)
  */
 static int dw1000_configure_profile(struct dw1000 *dw, const char *profile)
 {
+	struct dw1000_config *cfg = &dw->cfg;
 	struct dw1000_calib *calib = NULL;
-	bool smart_power;
+	int rc;
 	int i;
 
 	/* Find a matching profile */
@@ -1376,28 +1558,144 @@ static int dw1000_configure_profile(struct dw1000 *dw, const char *profile)
 		}
 	}
 	if (!calib) {
-		dev_warn(dw->dev, "calibration profile \"%s\" not found\n", profile);
+		dev_warn(dw->dev, "calibration profile \"%s\" not found\n",
+			 profile);
 		return -EINVAL;
 	}
 
 	dev_info(dw->dev, "loading calibration profile \"%s\"\n", profile);
 
-	/* Enabled if tx power value is meaningful for smart power */
-	smart_power = !!(calib->power & 0xff000000);
+	/* Lock configuration */
+	mutex_lock(&cfg->mutex);
 
-	/* Apply calibration values */
-	if (dw1000_configure_channel(dw, calib->ch) ||
-	    dw1000_configure_prf(dw, calib->prf) ||
-	    dw1000_configure_antd(dw, calib->antd) ||
-	    dw1000_configure_smart_power(dw, smart_power) ||
-	    dw1000_configure_tx_power(dw, calib->power)) {
-		dev_warn(dw->dev, "failure loading calibration profile \"%s\"\n", profile);
-		return -EINVAL;
+	/* Set changed parameters */
+	cfg->pending |=
+		DW1000_CONFIGURE_CHANNEL |
+		DW1000_CONFIGURE_PRF |
+		DW1000_CONFIGURE_ANTD |
+		DW1000_CONFIGURE_TX_POWER |
+		DW1000_CONFIGURE_SMART_POWER;
+
+	/* Set channel in the 802.15.4 stack */
+	dw->hw->phy->current_channel = calib->ch;
+	
+	/* Record values */
+	cfg->channel = calib->ch;
+	cfg->prf = calib->prf;
+	cfg->antd[cfg->prf] = calib->antd;
+	cfg->txpwr[0] = (calib->power >>  0) & 0xff;
+	cfg->txpwr[1] = (calib->power >>  8) & 0xff;
+	cfg->txpwr[2] = (calib->power >> 16) & 0xff;
+	cfg->txpwr[3] = (calib->power >> 24) & 0xff;
+	cfg->smart_power = !!(calib->power & 0xff000000);
+
+	/* Unlock configuration */
+	mutex_unlock(&cfg->mutex);
+
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
+	
+	return rc;
+}
+
+
+/******************************************************************************
+ *
+ * SAR ADC access
+ *
+ */
+
+/**
+ * dw1000_sar_init() - Prepare SAR SPI message
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_sar_init(struct dw1000 *dw)
+{
+	struct dw1000_sar *sar = &dw->sar;
+
+	/* Initialise SAR descriptor */
+	memset(sar, 0, sizeof(*sar));
+
+	/* Set contant values used in SPI transfer */
+	sar->ctrl_a1  = DW1000_RF_SENSOR_SARC_A1;
+	sar->ctrl_b1  = DW1000_RF_SENSOR_SARC_B1;
+	sar->ctrl_b2  = DW1000_RF_SENSOR_SARC_B2;
+	sar->ctrl_ena = DW1000_TC_SARC_CTRL;
+	sar->ctrl_dis = 0;
+
+	/* Prepare SAR SPI message */
+	spi_message_init_no_memset(&sar->spi_msg);
+	dw1000_init_write(&sar->spi_msg, &sar->spi_sarc_a1,
+			  DW1000_RF_CONF, DW1000_RF_SENSOR_SARC_A,
+			  &sar->ctrl_a1, sizeof(sar->ctrl_a1));
+	dw1000_init_write(&sar->spi_msg, &sar->spi_sarc_b1,
+			  DW1000_RF_CONF, DW1000_RF_SENSOR_SARC_B,
+			  &sar->ctrl_b1, sizeof(sar->ctrl_b1));
+	dw1000_init_write(&sar->spi_msg, &sar->spi_sarc_b2,
+			  DW1000_RF_CONF, DW1000_RF_SENSOR_SARC_B,
+			  &sar->ctrl_b2, sizeof(sar->ctrl_b2));
+	dw1000_init_write(&sar->spi_msg, &sar->spi_sarc_ena,
+			  DW1000_TX_CAL, DW1000_TC_SARC,
+			  &sar->ctrl_ena, sizeof(sar->ctrl_ena));
+
+	/* Keep the ADC on for a few us */
+	sar->spi_sarc_ena.data.delay_usecs = DW1000_SAR_WAIT_US;
+
+	dw1000_init_write(&sar->spi_msg, &sar->spi_sarc_dis,
+			  DW1000_TX_CAL, DW1000_TC_SARC,
+			  &sar->ctrl_dis, sizeof(sar->ctrl_dis));
+	dw1000_init_read(&sar->spi_msg, &sar->spi_sarl,
+			 DW1000_TX_CAL, DW1000_TC_SARL,
+			 &sar->adc.raw, sizeof(sar->adc.raw));
+
+	return 0;
+}
+
+/**
+ * dw1000_sar_read() - Read SAR ADC values
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_sar_read(struct dw1000 *dw)
+{
+	struct dw1000_sar *sar = &dw->sar;
+	int rc;
+
+	/* Send SPI message */
+	if ((rc = spi_sync(dw->spi, &sar->spi_msg)) != 0) {
+		dev_dbg(dw->dev, "ADC SAR read failed: %d\n", rc);
+		return rc;
 	}
 
 	return 0;
 }
 
+/**
+ * dw1000_sar_get_temp(struct dw1000 *dw) - Read SAR temperature reading
+ *
+ * @dw:			DW1000 device
+ * @return:		Temperature in millidegrees Celcius [mC]
+ */
+static inline int dw1000_sar_get_temp(struct dw1000 *dw)
+{
+	return (100000 * ((int)dw->sar.adc.temp - (int)dw->tcalib_23c))
+		/ 114 + 23000;
+}
+
+/**
+ * dw1000_sar_get_volt(struct dw1000 *dw) - Read SAR voltage reading
+ *
+ * @dw:			DW1000 device
+ * @return:		Voltage in millivolts [mV]
+ */
+static inline int dw1000_sar_get_volt(struct dw1000 *dw)
+{
+	return (1000 * ((int)dw->sar.adc.volt - (int)dw->vcalib_3v3))
+		/ 173 + 3300;
+}
 
 
 /******************************************************************************
@@ -1407,7 +1705,7 @@ static int dw1000_configure_profile(struct dw1000 *dw, const char *profile)
  */
 
 /**
- * dw1000_cc_read() - Read underlying cycle counter
+ * dw1000_ptp_cc_read() - Read underlying cycle counter
  *
  * @cc:			Cycle counter
  * @return:		Cycle count
@@ -1445,38 +1743,16 @@ static uint64_t dw1000_ptp_cc_read(const struct hires_counter *tc)
 }
 
 /**
- * dw1000_ptp_worker() - Clock wraparound detection worker
- *
- * @work:		Worker
- */
-static void dw1000_ptp_worker(struct work_struct *work)
-{
-	struct dw1000 *dw = container_of(to_delayed_work(work),
-					 struct dw1000, ptp_work);
-	struct hires_counter *tc = &dw->ptp.tc;
-
-	/* Synchronise counter; this must be done at least
-	 * twice per wraparound.
-	 */
-	mutex_lock(&dw->ptp.mutex);
-	hires_counter_sync(tc);
-	mutex_unlock(&dw->ptp.mutex);
-
-	/* Reschedule worker */
-	schedule_delayed_work(&dw->ptp_work, DW1000_PTP_WORK_DELAY);
-}
-
-/**
  * dw1000_ptp_adjfine() - Adjust frequency of hardware clock
  *
  * @ptp:		PTP clock information
  * @delta:		Frequency offset in ppm + 16bit fraction
  * @return:		0 on success or -errno
  */
-static int dw1000_ptp_adjfine(struct ptp_clock_info *ptp, long delta)
+static int dw1000_ptp_adjfine(struct ptp_clock_info *ptp_info, long delta)
 {
-	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
-	struct hires_counter *tc = &dw->ptp.tc;
+	struct dw1000 *dw = container_of(ptp_info, struct dw1000, ptp.info);
+	struct dw1000_ptp *ptp = &dw->ptp;
 	uint64_t mult;
 
 	/* Calculate multiplier value */
@@ -1487,9 +1763,9 @@ static int dw1000_ptp_adjfine(struct ptp_clock_info *ptp, long delta)
 			     DW1000_CYCLECOUNTER_MULT + mult;
 
 	/* Adjust counter multiplier */
-	mutex_lock(&dw->ptp.mutex);
-	hires_counter_setmult(tc, mult);
-	mutex_unlock(&dw->ptp.mutex);
+	mutex_lock(&ptp->mutex);
+	hires_counter_setmult(&ptp->tc, mult);
+	mutex_unlock(&ptp->mutex);
 
 	dev_dbg(dw->dev, "adjust frequency %+ld sppm: multiplier adj %llu\n",
 		delta, (unsigned long long) mult);
@@ -1503,16 +1779,16 @@ static int dw1000_ptp_adjfine(struct ptp_clock_info *ptp, long delta)
  * @delta:		Change in nanoseconds
  * @return:		0 on success or -errno
  */
-static int dw1000_ptp_adjtime(struct ptp_clock_info *ptp, int64_t delta)
+static int dw1000_ptp_adjtime(struct ptp_clock_info *ptp_info, int64_t delta)
 {
-	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
-	struct hires_counter *tc = &dw->ptp.tc;
+	struct dw1000 *dw = container_of(ptp_info, struct dw1000, ptp.info);
+	struct dw1000_ptp *ptp = &dw->ptp;
 	struct timehires hdelta = { delta, 0, };
 
 	/* Adjust timecounter */
-	mutex_lock(&dw->ptp.mutex);
-	hires_counter_adjtime(tc, hdelta);
-	mutex_unlock(&dw->ptp.mutex);
+	mutex_lock(&ptp->mutex);
+	hires_counter_adjtime(&ptp->tc, hdelta);
+	mutex_unlock(&ptp->mutex);
 
 	dev_dbg(dw->dev, "adjust time %+lld ns\n", delta);
 	return 0;
@@ -1525,17 +1801,17 @@ static int dw1000_ptp_adjtime(struct ptp_clock_info *ptp, int64_t delta)
  * @ts:			Time to fill in
  * @return:		0 on sucess or -errno
  */
-static int dw1000_ptp_gettime(struct ptp_clock_info *ptp,
+static int dw1000_ptp_gettime(struct ptp_clock_info *ptp_info,
 			      struct timespec64 *ts)
 {
-	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
-	struct hires_counter *tc = &dw->ptp.tc;
+	struct dw1000 *dw = container_of(ptp_info, struct dw1000, ptp.info);
+	struct dw1000_ptp *ptp = &dw->ptp;
 	struct timehires time;
 
 	/* Read timecounter */
-	mutex_lock(&dw->ptp.mutex);
-	time = hires_counter_cyc2time(tc, hires_counter_read(tc));
-	mutex_unlock(&dw->ptp.mutex);
+	mutex_lock(&ptp->mutex);
+	time = hires_counter_cyc2time(&ptp->tc, hires_counter_read(&ptp->tc));
+	mutex_unlock(&ptp->mutex);
 
 	/* Convert to timespec */
 	*ts = ns_to_timespec64(time.tv_nsec);
@@ -1550,11 +1826,11 @@ static int dw1000_ptp_gettime(struct ptp_clock_info *ptp,
  * @ts:			Time
  * @return:		0 on sucess or -errno
  */
-static int dw1000_ptp_settime(struct ptp_clock_info *ptp,
+static int dw1000_ptp_settime(struct ptp_clock_info *ptp_info,
 			      const struct timespec64 *ts)
 {
-	struct dw1000 *dw = container_of(ptp, struct dw1000, ptp.info);
-	struct hires_counter *tc = &dw->ptp.tc;
+	struct dw1000 *dw = container_of(ptp_info, struct dw1000, ptp.info);
+	struct dw1000_ptp *ptp = &dw->ptp;
 	struct timehires time;
 
 	/* Convert to nanoseconds */
@@ -1562,9 +1838,9 @@ static int dw1000_ptp_settime(struct ptp_clock_info *ptp,
 	time.tv_frac = 0;
 
 	/* Reset timecounter */
-	mutex_lock(&dw->ptp.mutex);
-	hires_counter_settime(tc, time);
-	mutex_unlock(&dw->ptp.mutex);
+	mutex_lock(&ptp->mutex);
+	hires_counter_settime(&ptp->tc, time);
+	mutex_unlock(&ptp->mutex);
 
 	dev_dbg(dw->dev, "set time %llu ns\n", time.tv_nsec);
 	return 0;
@@ -1586,6 +1862,51 @@ static int dw1000_ptp_enable(struct ptp_clock_info *ptp,
 }
 
 /**
+ * dw1000_ptp_sync() - Sync clock source
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_ptp_sync(struct dw1000 *dw)
+{
+	struct dw1000_ptp *ptp = &dw->ptp;
+
+	/* Synchronise counter. This must be done at least twice 
+	 * per wraparound ~17s. We try to do it 5 times.
+	 */
+	mutex_lock(&ptp->mutex);
+	hires_counter_sync(&ptp->tc);
+	mod_timer(&ptp->timer, jiffies +
+		  msecs_to_jiffies(DW1000_PTP_SYNC_DELAY));
+	mutex_unlock(&ptp->mutex);
+
+	return 0;
+}
+
+/**
+ * dw1000_ptp_reset() - Reset clock source
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_ptp_reset(struct dw1000 *dw)
+{
+	struct dw1000_ptp *ptp = &dw->ptp;
+	struct timehires time;
+
+	/* Counter starting time */
+	time.tv_nsec = ktime_to_ns(ktime_get_real());
+	time.tv_frac = 0;
+	
+	/* Reset timecounter */
+	mutex_lock(&ptp->mutex);
+	hires_counter_settime(&ptp->tc, time);
+	mutex_unlock(&ptp->mutex);
+
+	return 0;
+}
+
+/**
  * dw1000_ptp_init() - Initialise PTP clock
  *
  * @dw:			DW1000 device
@@ -1593,20 +1914,27 @@ static int dw1000_ptp_enable(struct ptp_clock_info *ptp,
  */
 static int dw1000_ptp_init(struct dw1000 *dw)
 {
-	struct ptp_clock_info *info = &dw->ptp.info;
-	struct hires_counter *tc = &dw->ptp.tc;
+	struct dw1000_ptp *ptp = &dw->ptp;
+	struct ptp_clock_info *info = &ptp->info;
 	struct timehires start;
-
+	int rc;
+	
+	/* Clear memory */
+	memset(ptp, 0, sizeof(*ptp));
+	
 	/* Initialise mutex */
-	mutex_init(&dw->ptp.mutex);
+	mutex_init(&ptp->mutex);
 
 	/* Counter starting time */
 	start.tv_nsec = ktime_to_ns(ktime_get_real());
 	start.tv_frac = 0;
 
 	/* Initialise time counter */
-	hires_counter_init(tc, dw1000_ptp_cc_read, start,
+	hires_counter_init(&ptp->tc, dw1000_ptp_cc_read, start,
 			   DW1000_CYCLECOUNTER_SIZE, DW1000_CYCLECOUNTER_MULT);
+
+	/* Setup timer */
+	timer_setup(&ptp->timer, dw1000_ptp_timer_handler, 0);
 
 	/* Initialise PTP clock information */
 	info->owner = THIS_MODULE;
@@ -1618,31 +1946,60 @@ static int dw1000_ptp_init(struct dw1000 *dw)
 	info->settime64 = dw1000_ptp_settime;
 	info->enable = dw1000_ptp_enable;
 
+	/* Register PTP clock */
+	ptp->clock = ptp_clock_register(&ptp->info, dw->dev);
+	if (IS_ERR(ptp->clock)) {
+		rc = PTR_ERR(ptp->clock);
+		return rc;
+	}
+
+	/* Start timer */
+	mod_timer(&ptp->timer, jiffies +
+		  msecs_to_jiffies(DW1000_PTP_SYNC_DELAY));
+
 	return 0;
 }
 
 /**
- * dw1000_timestamp() - Convert DW1000 timestamp to kernel timestamp
+ * dw1000_ptp_remove() - Remove PTP clock
+ *
+ * @dw:			DW1000 device
+ */
+static void dw1000_ptp_remove(struct dw1000 *dw)
+{
+	struct dw1000_ptp *ptp = &dw->ptp;
+
+	/* Unregister */
+	if (ptp->clock) {
+		del_timer_sync(&ptp->timer);
+		ptp_clock_unregister(ptp->clock);
+	}
+	ptp->clock = NULL;
+}
+
+	
+/**
+ * dw1000_ptp_timestamp() - Convert DW1000 timestamp to kernel timestamp
  *
  * @dw:			DW1000 device
  * @time:		DW1000 timestamp
  * @hwtstamps:		Kernel hardware timestamp
  */
-static void dw1000_timestamp(struct dw1000 *dw,
-			     const union dw1000_timestamp *time,
-			     struct skb_shared_hwtstamps *hwtstamps)
+static void dw1000_ptp_timestamp(struct dw1000 *dw,
+				 const union dw1000_timestamp *time,
+				 struct skb_shared_hwtstamps *hwtstamps)
 {
-	struct hires_counter *tc = &dw->ptp.tc;
+	struct dw1000_ptp *ptp = &dw->ptp;
 	struct timehires stamp;
 	cycle_t cc;
 
 	/* Get 5-byte timestamp */
 	cc = le64_to_cpu(time->cc) & DW1000_TIMESTAMP_MASK;
 
-	/* Convert timestamp to nanoseconds */
-	mutex_lock(&dw->ptp.mutex);
-	stamp = hires_counter_cyc2time(tc, cc);
-	mutex_unlock(&dw->ptp.mutex);
+	/* Convert to nanoseconds */
+	mutex_lock(&ptp->mutex);
+	stamp = hires_counter_cyc2time(&ptp->tc, cc);
+	mutex_unlock(&ptp->mutex);
 
 	/* Fill in kernel hardware timestamp */
 	memset(hwtstamps, 0, sizeof(*hwtstamps));
@@ -1653,31 +2010,37 @@ static void dw1000_timestamp(struct dw1000 *dw,
 }
 
 /**
- * dw1000_tsinfo() - Convert DW1000 tsinfo to kernel timestamp
+ * dw1000_ptp_tsinfo() - Convert DW1000 tsinfo to kernel timestamp
  *
  * @dw:			DW1000 device
  * @time:		DW1000 timestamp
  * @tsinfo:		DW1000 tsinfo
  * @hwtstamps:		Kernel hardware timestamp
  */
-static void dw1000_tsinfo(struct dw1000 *dw,
-			  const union dw1000_timestamp *time,
-			  struct dw1000_tsinfo *tsinfo,
-			  struct skb_shared_hwtstamps *hwtstamps)
+static void dw1000_ptp_tsinfo(struct dw1000 *dw,
+			      const union dw1000_timestamp *time,
+			      struct dw1000_tsinfo *tsinfo,
+			      struct skb_shared_hwtstamps *hwtstamps)
 {
+	struct dw1000_ptp *ptp = &dw->ptp;
+	
+	/* Voltage and temperature KPIs */
+	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
+		tsinfo->temp = dw1000_sar_get_temp(dw) / 10;
+		tsinfo->volt = dw1000_sar_get_volt(dw);
+	}
+
 	/* Raw timestamp enabled */
 	if (dw1000_tsinfo_ena & DW1000_TSINFO_TIME) {
-		struct hires_counter *tc = &dw->ptp.tc;
-		cycle_t rawts;
-		cycle_t cc;
+		cycle_t rawts, cc;
 
 		/* Get 5-byte timestamp */
 		cc = le64_to_cpu(time->cc) & DW1000_TIMESTAMP_MASK;
 
 		/* Convert to raw monotonic ticks */
-		mutex_lock(&dw->ptp.mutex);
-		rawts = hires_counter_cyc2raw(tc, cc);
-		mutex_unlock(&dw->ptp.mutex);
+		mutex_lock(&ptp->mutex);
+		rawts = hires_counter_cyc2raw(&ptp->tc, cc);
+		mutex_unlock(&ptp->mutex);
 
 		/* Assign raw timestamp to tsinfo */
 		tsinfo->rawts = rawts;
@@ -1688,6 +2051,403 @@ static void dw1000_tsinfo(struct dw1000 *dw,
 	if (dw1000_tsinfo_ena)
 		memcpy(hwtstamps->hwtsinfo, tsinfo, sizeof(*tsinfo));
 #endif
+}
+
+
+/******************************************************************************
+ *
+ * Transmit datapath
+ *
+ */
+
+/**
+ * dw1000_tx_init() - Initialise Tx descriptor
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_tx_init(struct dw1000 *dw)
+{
+	struct dw1000_tx *tx = &dw->tx;
+
+	/* Initialise transmit descriptor */
+	memset(tx, 0, sizeof(*tx));
+
+	/* Init lock */
+	spin_lock_init(&tx->lock);
+	
+	/* Set constant values used in SPI transfer */
+	tx->trxoff = DW1000_SYS_CTRL0_TRXOFF;
+	tx->txstrt = DW1000_SYS_CTRL0_TXSTRT;
+	tx->txmask = cpu_to_le32(DW1000_SYS_MASK_TX);
+	tx->rxmask = cpu_to_le32(DW1000_SYS_MASK_RX);
+	tx->rxena  = DW1000_SYS_CTRL1_RXENAB;
+	tx->txfrs  = DW1000_SYS_STATUS0_TXFRB | DW1000_SYS_STATUS0_TXPRS |
+		     DW1000_SYS_STATUS0_TXPHS | DW1000_SYS_STATUS0_TXFRS;
+
+	/* Prepare data SPI message */
+	spi_message_init_no_memset(&tx->spi_data);
+	dw1000_init_write(&tx->spi_data, &tx->spi_txmask, DW1000_SYS_MASK,
+			  0, &tx->txmask, sizeof(tx->txmask));
+	dw1000_init_write(&tx->spi_data, &tx->spi_buffer, DW1000_TX_BUFFER, 0,
+			  NULL, 0);
+	dw1000_init_write(&tx->spi_data, &tx->spi_fctrl, DW1000_TX_FCTRL,
+			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
+	dw1000_init_write(&tx->spi_data, &tx->spi_trxoff, DW1000_SYS_CTRL,
+			  DW1000_SYS_CTRL0, &tx->trxoff, sizeof(tx->trxoff));
+	dw1000_init_write(&tx->spi_data, &tx->spi_txstrt, DW1000_SYS_CTRL,
+			  DW1000_SYS_CTRL0, &tx->txstrt, sizeof(tx->txstrt));
+
+	/* Prepare information SPI message */
+	spi_message_init_no_memset(&tx->spi_info);
+	dw1000_init_write(&tx->spi_info, &tx->spi_status, DW1000_SYS_STATUS,
+			  DW1000_SYS_STATUS0, &tx->txfrs, sizeof(tx->txfrs));
+	dw1000_init_read(&tx->spi_info, &tx->spi_txtime, DW1000_TX_TIME,
+			 DW1000_TX_STAMP, &tx->time.raw, sizeof(tx->time.raw));
+	dw1000_init_write(&tx->spi_info, &tx->spi_rxmask, DW1000_SYS_MASK,
+			  0, &tx->rxmask, sizeof(tx->rxmask));
+	dw1000_init_write(&tx->spi_info, &tx->spi_rxena, DW1000_SYS_CTRL,
+                          DW1000_SYS_CTRL1, &tx->rxena, sizeof(tx->rxena));
+
+	return 0;
+}
+
+/**
+ * dw1000_tx_complete() - Complete transmission
+ *
+ * @dw:			DW1000 device
+ */
+static void dw1000_tx_complete(struct dw1000 *dw)
+{
+	struct dw1000_tx *tx = &dw->tx;
+	struct sk_buff *skb;
+	unsigned long flags;
+	
+	/* Release skb */
+	spin_lock_irqsave(&tx->lock, flags);
+	skb = tx->skb;
+	tx->skb = NULL;
+	spin_unlock_irqrestore(&tx->lock, flags);
+	
+	/* Reset tx retries */
+	tx->retries = 0;
+	
+	/* Report completion to IEEE 802.15.4 stack */
+	if (skb)
+		ieee802154_xmit_complete(dw->hw, skb,
+					 (skb->len <= DW1000_MAX_SKB_LEN));
+}
+
+/**
+ * dw1000_tx_frame_start() - Start packet transmit
+ *
+ * @hw:			IEEE 802.15.4 device
+ * @skb:		Socket buffer
+ * @return:		0 on success or -errno
+ */
+static void dw1000_tx_frame_start(struct dw1000 *dw)
+{
+	struct dw1000_tx *tx = &dw->tx;
+	struct sk_buff *skb;
+	unsigned long flags;
+
+	/* Acquire TX lock, get skb */
+	spin_lock_irqsave(&tx->lock, flags);
+	skb = tx->skb;
+	spin_unlock_irqrestore(&tx->lock, flags);
+
+	/* Sanity check */
+	if (!skb)
+		return;
+
+	/* Transmission in progress */
+	dw1000_set_state_timeout(dw, DW1000_STATE_TX, DW1000_TX_TIMEOUT);
+	
+	/* Update data SPI message */
+	tx->spi_buffer.data.tx_buf = skb->data;
+	tx->spi_buffer.data.len = skb->len;
+
+	/* Adjust frame length */
+	tx->len = DW1000_TX_FCTRL0_TFLEN(skb->len + IEEE802154_FCS_LEN);
+
+	/* Indicate timestamping */
+	if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP)
+		skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
+
+	INJECT_ERROR(dw, TX_DELAY);
+
+	/* Data transfer SPI message */
+	if ((spi_sync(dw->spi, &tx->spi_data)) != 0) {
+		dw1000_enqueue(dw, DW1000_ERROR_WORK);
+		goto err_spi;
+	}
+
+	INJECT_ERROR(dw, TX_SPI_DATA, err_spi);
+
+	/* Set software timestamp close to TXSTRT */
+	skb_tx_timestamp(skb);
+
+	return;
+	
+ err_spi:
+	/* Statistics */
+	dw1000_stats_inc(dw, DW1000_STATS_SPI_ERROR);
+	dw1000_stats_inc(dw, DW1000_STATS_TX_ERROR);
+	
+	/* Discard skb */
+	dw1000_tx_complete(dw);
+}
+
+/**
+ * dw1000_tx_frame_sent() - Handle Transmit Frame Sent (TXFRS) event
+ *
+ * @dw:			DW1000 device
+ */
+static void dw1000_tx_frame_sent(struct dw1000 *dw)
+{
+	struct dw1000_tx *tx = &dw->tx;
+	struct dw1000_tsinfo *tsi = &tx->tsinfo;
+	struct skb_shared_hwtstamps hwtstamps;
+	struct sk_buff *skb;
+	unsigned long flags;
+	int rc;
+
+	/* Get skb */
+	spin_lock_irqsave(&tx->lock, flags);
+	skb = tx->skb;
+	spin_unlock_irqrestore(&tx->lock, flags);
+
+	/* sanity check */
+	if (!skb)
+		return;
+	
+	/* Information SPI message */
+	if ((rc = spi_sync(dw->spi, &tx->spi_info)) != 0) {
+		dw1000_enqueue(dw, DW1000_ERROR_WORK);
+		goto err_spi;
+	}
+
+	INJECT_ERROR(dw, TX_SPI_INFO, err_spi);
+
+	/* Record hardware timestamp, if applicable */
+	if (skb_shinfo(skb)->tx_flags & SKBTX_IN_PROGRESS) {
+		dw1000_ptp_timestamp(dw, &tx->time, &hwtstamps);
+		dw1000_ptp_tsinfo(dw, &tx->time, tsi, &hwtstamps);
+		skb_tstamp_tx(skb, &hwtstamps);
+	}
+
+	/* skb completed */
+	dw1000_tx_complete(dw);
+
+	/* Statistics */
+	dw1000_stats_inc(dw, DW1000_STATS_TX_FRAME);
+	
+	/* Return to RX */
+	dw1000_set_state(dw, DW1000_STATE_RX);
+	return;
+	
+ err_spi:
+	/* Statistics */
+	dw1000_stats_inc(dw, DW1000_STATS_SPI_ERROR);
+	dw1000_stats_inc(dw, DW1000_STATS_TX_ERROR);
+	
+	/* Discard skb */
+	dw1000_tx_complete(dw);
+}
+
+/**
+ * dw1000_tx_error() - Handle Transmit failure
+ *
+ * @dw:			DW1000 device
+ */
+static void dw1000_tx_error(struct dw1000 *dw)
+{
+	struct dw1000_tx *tx = &dw->tx;
+
+	/* Recovery action */
+	dw1000_disable(dw);
+
+	/* Increment retry count */
+	tx->retries++;
+
+	/* Retry a few times */
+	if (tx->retries < DW1000_TX_MAX_RETRIES) {
+		dw1000_tx_frame_start(dw);
+		dw1000_stats_inc(dw, DW1000_STATS_TX_RETRY);
+	} else {
+		dw1000_tx_complete(dw);
+		dw1000_stats_inc(dw, DW1000_STATS_TX_ERROR);
+	}
+}
+
+
+/******************************************************************************
+ *
+ * Receive datapath
+ *
+ */
+
+/**
+ * dw1000_rx_init() - Prepare receive SPI messages
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_rx_init(struct dw1000 *dw)
+{
+	struct dw1000_rx *rx = &dw->rx;
+
+	/* Initialise receive descriptor */
+	memset(rx, 0, sizeof(*rx));
+
+	/* Set contant values used in SPI transfers */
+	rx->hrbpt = DW1000_SYS_CTRL3_HRBPT;
+	rx->mask0 = cpu_to_le32(DW1000_SYS_MASK_IDLE);
+	rx->mask1 = cpu_to_le32(DW1000_SYS_MASK_RX);
+	rx->clear = cpu_to_le32(DW1000_SYS_STATUS_DBLBUF);
+	rx->reset = cpu_to_le32(DW1000_SYS_STATUS_TRX);
+
+	/* Prepare information SPI message */
+	spi_message_init(&rx->spi_info);
+	dw1000_init_read(&rx->spi_info, &rx->spi_finfo, DW1000_RX_FINFO, 0,
+			 &rx->finfo, sizeof(rx->finfo));
+	dw1000_init_read(&rx->spi_info, &rx->spi_fqual, DW1000_RX_FQUAL, 0,
+			 &rx->fqual, sizeof(rx->fqual));
+	dw1000_init_read(&rx->spi_info, &rx->spi_time, DW1000_RX_TIME, 0,
+			 &rx->time, sizeof(rx->time));
+
+	/* Include Time Tracking only if enabled */
+	if (dw1000_tsinfo_ena & DW1000_TSINFO_TTCK) {
+		dw1000_init_read(&rx->spi_info, &rx->spi_ttcki, DW1000_RX_TTCKI,
+				 0, &rx->ttcki, sizeof(rx->ttcki.raw));
+		dw1000_init_read(&rx->spi_info, &rx->spi_ttcko, DW1000_RX_TTCKO,
+				 0, &rx->ttcko, sizeof(rx->ttcko.raw));
+	}
+
+	/* Read status last */
+	dw1000_init_read(&rx->spi_info, &rx->spi_status, DW1000_SYS_STATUS, 0,
+			 &rx->status, sizeof(rx->status));
+	
+
+	/* Prepare data SPI message */
+	spi_message_init(&rx->spi_data);
+	dw1000_init_read(&rx->spi_data, &rx->spi_buffer, DW1000_RX_BUFFER, 0,
+			 NULL, 0);
+	dw1000_init_write(&rx->spi_data, &rx->spi_clear, DW1000_SYS_STATUS, 0,
+			  &rx->clear, sizeof(rx->clear));
+	dw1000_init_write(&rx->spi_data, &rx->spi_sys_ctrl, DW1000_SYS_CTRL,
+			  DW1000_SYS_CTRL3, &rx->hrbpt, sizeof(rx->hrbpt));
+
+	/* Prepare recovery SPI message */
+	spi_message_init(&rx->spi_rcvr);
+	dw1000_init_write(&rx->spi_rcvr, &rx->spi_mask0, DW1000_SYS_MASK,
+			  0, &rx->mask0, sizeof(rx->mask0));
+	dw1000_init_write(&rx->spi_rcvr, &rx->spi_reset, DW1000_SYS_STATUS,
+			  0, &rx->reset, sizeof(rx->reset));
+	dw1000_init_write(&rx->spi_rcvr, &rx->spi_hrbpt, DW1000_SYS_CTRL,
+			  DW1000_SYS_CTRL3, &rx->hrbpt, sizeof(rx->hrbpt));
+	dw1000_init_write(&rx->spi_rcvr, &rx->spi_mask1, DW1000_SYS_MASK,
+			  0, &rx->mask1, sizeof(rx->mask1));
+	dw1000_init_read(&rx->spi_info, &rx->spi_systat, DW1000_SYS_STATUS, 0,
+			 &rx->status, sizeof(rx->status));
+
+	return 0;
+}
+
+/**
+ * dw1000_rx_reset() - Device Rx reset
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_rx_reset(struct dw1000 *dw)
+{
+	int rc;
+
+	/* Update stats */
+	dw1000_stats_inc(dw, DW1000_STATS_RX_RESET);
+
+	/* Initiate reset */
+	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				     DW1000_PMSC_CTRL0_RXRESET, 0)) != 0)
+		goto err_spi;
+
+	/* Clear reset */
+	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
+				     DW1000_PMSC_CTRL0_RXRESET,
+				     DW1000_PMSC_CTRL0_RXRESET)) != 0)
+		goto err_spi;
+
+	return 0;
+
+ err_spi:
+	dw1000_stats_inc(dw, DW1000_STATS_SPI_ERROR);
+	dw1000_enqueue(dw, DW1000_ERROR_WORK);
+	return rc;
+}
+
+/**
+ * dw1000_rx_resync() - Handle minor receiver errors
+ *
+ * @dw:			DW1000 device
+ */
+static int dw1000_rx_resync(struct dw1000 *dw)
+{
+	struct dw1000_rx *rx = &dw->rx;
+	unsigned status;
+	int rc;
+
+	/* Statistics */
+	dw1000_stats_inc(dw, DW1000_STATS_RX_RESYNC);
+		
+	/* Send recovery SPI message */
+	if ((rc = spi_sync(dw->spi, &rx->spi_rcvr)) != 0) {
+		dev_err(dw->dev, "RX recovery failed: %d\n", rc);
+		goto err_spi;
+	}
+	/* System status */
+	status = le32_to_cpu(rx->status);
+	
+	/* RX out-of-sync */
+	if (!DW1000_HSRPB_SYNC(status)) {
+		/* Update statistics */
+		dw1000_stats_inc(dw, DW1000_STATS_RX_HSRBP);
+		/* Send recovery SPI message */
+		if ((rc = spi_sync(dw->spi, &rx->spi_rcvr)) != 0) {
+			dev_err(dw->dev, "RX sync recovery failed: %d\n", rc);
+			goto err_spi;
+		}
+	}
+	
+	return 0;
+
+ err_spi:
+	dw1000_stats_inc(dw, DW1000_STATS_SPI_ERROR);
+	dw1000_enqueue(dw, DW1000_ERROR_WORK);
+	return rc;
+}
+
+/**
+ * dw1000_rx_recover() - Recover from rx errors, like RXOVRR
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_rx_recover(struct dw1000 *dw)
+{
+	int rc;
+
+	/* Disable trx */
+	if ((rc = dw1000_disable(dw)) != 0)
+		return rc;
+	/* Soft Rx reset */
+	if ((rc = dw1000_rx_reset(dw)) != 0)
+		return rc;
+	/* Resync and clear status */
+	if ((rc = dw1000_rx_resync(dw)) != 0)
+		return rc;
+
+	return 0;
 }
 
 /**
@@ -1717,6 +2477,12 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 	finfo = le32_to_cpu(rx->finfo);
 	status = le32_to_cpu(rx->status);
 
+	/* LDE routine failed */
+	if (unlikely((status & DW1000_SYS_STATUS_LDEDONE) == 0)) {
+		dw1000_stats_inc(dw, DW1000_STATS_RX_LDEDONE);
+		goto invalid;
+	}
+	
 	/* Extract buffer id */
 	hsrbp = DW1000_RX_STATUS_HSRBP(status);
 
@@ -1724,23 +2490,21 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 	cc = le64_to_cpu(rx->time.rx_stamp.cc) & DW1000_TIMESTAMP_MASK;
 
 	/* Check it is really a new value */
-	if (unlikely(((cc - dw->rx_timestamp[hsrbp]) & DW1000_TIMESTAMP_MASK)
+	if (unlikely(((cc - rx->timestamp[hsrbp]) & DW1000_TIMESTAMP_MASK)
 		     < DW1000_TIMESTAMP_REPETITION_THRESHOLD)) {
-		dev_err_ratelimited(dw->dev, "frame repetition #0 detected\n");
-		rx->timestamp_valid = false;
+		dw1000_stats_inc(dw, DW1000_STATS_RX_FRAME_REP);
 		rx->frame_valid = false;
 		goto invalid;
 	}
-	if (unlikely(((cc - dw->rx_timestamp[hsrbp^1]) & DW1000_TIMESTAMP_MASK)
+	if (unlikely(((cc - rx->timestamp[hsrbp^1]) & DW1000_TIMESTAMP_MASK)
 		     < DW1000_TIMESTAMP_REPETITION_THRESHOLD)) {
-		dev_err_ratelimited(dw->dev, "frame repetition #1 detected\n");
-		rx->timestamp_valid = false;
+		dw1000_stats_inc(dw, DW1000_STATS_RX_FRAME_REP);
 		rx->frame_valid = false;
 		goto invalid;
 	}
 
 	/* Remember timestamp */
-	dw->rx_timestamp[hsrbp] = cc;
+	rx->timestamp[hsrbp] = cc;
 
 	/* Signal quality KPIs */
 	index = le16_to_cpu(rx->time.fp_index);
@@ -1768,26 +2532,15 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 		tsi->ttcki = le32_to_cpu(rx->ttcki.tcki);
 	}
 
-	/* Voltage and temperature KPIs */
-	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		tsi->temp = DW1000_SAR_TEMP_MDEGC(rx->adc.temp, dw->tmeas_23c) / 10;
-		tsi->volt = DW1000_SAR_VBAT_MVOLT(rx->adc.volt, dw->vmeas_3v3);
-#ifdef DW1000_VOLTAGE_CHECK
-		if (tsi->volt < 3000)
-			dev_warn_ratelimited(dw->dev, "[Rx] low voltage: %dmV (0x%02x)\n",
-					     tsi->volt, rx->adc.volt);
-#endif
-	}
-
 	/* Sanity check */
-	if (noise == 0 || power == 0 || rxpacc == 0 || ampl1 == 0 || ampl2 == 0) {
-		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
-				     "invalid KPI values\n");
+	if (noise == 0 || power == 0 || rxpacc == 0 ||
+	    ampl1 == 0 || ampl2 == 0 || ampl3 == 0) {
+		dw1000_stats_inc(dw, DW1000_STATS_RX_KPI_ERROR);
 		goto invalid;
 	}
 
 	/* Get (expected) preamble symbol repetition count */
-	psr = dw1000_txpsrs[dw->txpsr];
+	psr = dw1000_txpsrs[dw->cfg.txpsr];
 
 	/* Calculate RX signal estimates */
 	fpnrj = ampl1*ampl1 + ampl2*ampl2 + ampl3*ampl3;
@@ -1804,423 +2557,51 @@ static void dw1000_rx_link_qual(struct dw1000 *dw)
 
 	/* Assign calculated KPIs */
 	if (dw1000_tsinfo_ena & DW1000_TSINFO_RXQC) {
-		tsi->lqi = rx->lqi;
+		tsi->fp_pwr = fppwr;
 		tsi->snr = snr;
 		tsi->fpr = fpr;
-		tsi->fp_pwr = fppwr;
+		tsi->lqi = rx->lqi;
 	}
 
 	/* Check background noise */
 	if (noise > dw->noise_threshold) {
-		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
-				     "NOISE %u > %u\n",
-				     noise, dw->noise_threshold);
-		goto invalid;
+		dw1000_stats_inc(dw, DW1000_STATS_NOISE_REJECT);
+		goto reject;
 	}
 
 	/* Check S/N Ratio */
 	if (snr < dw->snr_threshold) {
-		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
-				     "S/N %u < %u\n",
-				     snr, dw->snr_threshold);
-		goto invalid;
+		dw1000_stats_inc(dw, DW1000_STATS_SNR_REJECT);
+		goto reject;
 	}
 	if (fpr < dw->fpr_threshold) {
-		dev_warn_ratelimited(dw->dev, "timestamp ignored: "
-				     "F/P %u < %u\n",
-				     fpr, dw->fpr_threshold);
-		goto invalid;
+		dw1000_stats_inc(dw, DW1000_STATS_FPR_REJECT);
+		goto reject;
 	}
 
 	return;
 
  invalid:
+	/* Statistics */
+	dw1000_stats_inc(dw, DW1000_STATS_RX_STAMP_ERROR);
+ reject:
 	/* Timestamp is invalid */
 	rx->timestamp_valid = false;
-
-	dev_dbg_ratelimited(dw->dev, "SNR:%u FPR:%u FPPWR:%u POWER:%u NOISE:%u\n",
-			    snr, fpr, fppwr, power, noise);
 }
 
 
-/******************************************************************************
- *
- * Transmit datapath
- *
- */
-
-static void dw1000_tx_data_complete(void *context);
-static void dw1000_tx_complete(struct dw1000 *dw, struct sk_buff *skb);
-
 /**
- * dw1000_tx_prepare() - Prepare transmit SPI messages
- *
- * @dw:			DW1000 device
- * @return:		0 on success or -errno
- */
-static int dw1000_tx_prepare(struct dw1000 *dw)
-{
-	struct dw1000_tx *tx = &dw->tx;
-	struct dw1000_sar *sar = &dw->sar;
-
-	/* Initialise transmit descriptor */
-	memset(tx, 0, sizeof(*tx));
-
-	/* Set constant values used in SPI transfer */
-	tx->trxoff = DW1000_SYS_CTRL0_TRXOFF;
-	tx->txstrt = DW1000_SYS_CTRL0_TXSTRT | DW1000_SYS_CTRL0_WAIT4RESP;
-	tx->txfrs  = DW1000_SYS_STATUS0_TXFRB | DW1000_SYS_STATUS0_TXPRS |
-		     DW1000_SYS_STATUS0_TXPHS | DW1000_SYS_STATUS0_TXFRS;
-	tx->rxena  = DW1000_SYS_CTRL1_RXENAB;
-
-	/* Prepare data SPI message */
-	spi_message_init_no_memset(&tx->data);
-	tx->data.complete = dw1000_tx_data_complete;
-	tx->data.context = dw;
-	dw1000_init_write(&tx->data, &tx->tx_buffer, DW1000_TX_BUFFER, 0,
-			  NULL, 0);
-	dw1000_init_write(&tx->data, &tx->sys_ctrl_trxoff, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL0, &tx->trxoff, sizeof(tx->trxoff));
-	dw1000_init_write(&tx->data, &tx->tx_fctrl, DW1000_TX_FCTRL,
-			  DW1000_TX_FCTRL0, &tx->len, sizeof(tx->len));
-
-	/* Include SAR ADC control only if enabled */
-	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		dw1000_init_write(&tx->data, &tx->sarc_a1, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_A, &sar->ctrl_a1, sizeof(sar->ctrl_a1));
-		dw1000_init_write(&tx->data, &tx->sarc_b1, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b1, sizeof(sar->ctrl_b1));
-		dw1000_init_write(&tx->data, &tx->sarc_b2, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b2, sizeof(sar->ctrl_b2));
-		dw1000_init_write(&tx->data, &tx->sarc_ena, DW1000_TX_CAL,
-				  DW1000_TC_SARC, &sar->ctrl_ena, sizeof(sar->ctrl_ena));
-	}
-
-	dw1000_init_write(&tx->data, &tx->sys_ctrl_txstrt, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL0, &tx->txstrt, sizeof(tx->txstrt));
-	dw1000_init_read(&tx->data, &tx->sys_ctrl_check, DW1000_SYS_CTRL,
-			 DW1000_SYS_CTRL0, &tx->check, sizeof(tx->check));
-
-	/* Prepare information SPI message */
-	spi_message_init_no_memset(&tx->info);
-
-	/* Include SAR ADC control only if enabled */
-	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		dw1000_init_write(&tx->info, &tx->sarc_dis, DW1000_TX_CAL,
-				  DW1000_TC_SARC, &sar->ctrl_dis, sizeof(sar->ctrl_dis));
-		dw1000_init_read(&tx->info, &tx->sarl, DW1000_TX_CAL,
-				 DW1000_TC_SARL, &tx->adc.raw, sizeof(tx->adc.raw));
-	}
-
-	dw1000_init_read(&tx->info, &tx->tx_time, DW1000_TX_TIME,
-			 DW1000_TX_STAMP, &tx->time.raw, sizeof(tx->time.raw));
-	dw1000_init_write(&tx->info, &tx->sys_status, DW1000_SYS_STATUS,
-			  DW1000_SYS_STATUS0, &tx->txfrs, sizeof(tx->txfrs));
-	dw1000_init_write(&tx->info, &tx->rx_enab, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL1, &tx->rxena, sizeof(tx->rxena));
-
-	return 0;
-}
-
-/**
- * dw1000_tx() - Transmit packet
- *
- * @hw:			IEEE 802.15.4 device
- * @skb:		Socket buffer
- * @return:		0 on success or -errno
- */
-static int dw1000_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
-{
-	struct dw1000 *dw = hw->priv;
-	struct dw1000_tx *tx = &dw->tx;
-	unsigned long flags;
-	int rc;
-
-	/* Acquire TX lock */
-	spin_lock_irqsave(&dw->tx_lock, flags);
-
-	/* Sanity check */
-	if (tx->skb) {
-		dev_err(dw->dev, "concurrent transmit is not supported\n");
-		rc = -ENOBUFS;
-		goto err_concurrent;
-	}
-
-	/* Update data SPI message */
-	tx->skb = skb;
-	tx->tx_buffer.data.tx_buf = skb->data;
-	tx->tx_buffer.data.len = skb->len;
-	tx->len = DW1000_TX_FCTRL0_TFLEN(skb->len + IEEE802154_FCS_LEN);
-	tx->data_complete = false;
-	tx->retries = 0;
-
-	/* Prepare timestamping */
-	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP))
-		skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
-	skb_tx_timestamp(skb);
-
-	/* Initiate data SPI message */
-	if ((rc = spi_async(dw->spi, &tx->data)) != 0)
-		goto err_spi;
-
-	spin_unlock_irqrestore(&dw->tx_lock, flags);
-	return 0;
-
- err_spi:
-	tx->skb = NULL;
- err_concurrent:
-	spin_unlock_irqrestore(&dw->tx_lock, flags);
-	return rc;
-}
-
-/**
- * dw1000_tx_data_complete() - Handle transmit data SPI message completion
- *
- * @context:		DW1000 device
- */
-static void dw1000_tx_data_complete(void *context)
-{
-	struct dw1000 *dw = context;
-	struct dw1000_tx *tx = &dw->tx;
-	struct sk_buff *skb;
-	unsigned long flags;
-	int rc;
-
-	/* Acquire TX lock */
-	spin_lock_irqsave(&dw->tx_lock, flags);
-
-	/* Complete transmission immediately if data SPI message failed */
-	if (unlikely(tx->data.status != 0)) {
-		dev_err(dw->dev, "TX data message failed: %d\n",
-			tx->data.status);
-		goto err_status;
-	}
-
-	/* Check that transmit instruction was noticed by the
-	 * hardware.  This really ought not to be necessary in any
-	 * sane hardware design.
-	 */
-	if (tx->check & DW1000_SYS_CTRL0_TXSTRT) {
-		tx->retries++;
-		dev_err_ratelimited(dw->dev, "TX ignored by hardware (%02x) "
-				    "on attempt %d\n", tx->check, tx->retries);
-		if (tx->retries > DW1000_TX_MAX_RETRIES)
-			goto err_check;
-
-		/* Resubmit the transmit instruction (without
-		 * repopulating the transmit data buffer).
-		 */
-		tx->tx_buffer.data.len = 0;
-		if ((rc = spi_async(dw->spi, &tx->data)) != 0)
-			goto err_retry;
-	} else {
-		/* Mark data SPI message as complete */
-		tx->data_complete = true;
-	}
-
-	spin_unlock_irqrestore(&dw->tx_lock, flags);
-	return;
-
- err_retry:
- err_check:
- err_status:
-	skb = tx->skb;
-	tx->skb = NULL;
-	spin_unlock_irqrestore(&dw->tx_lock, flags);
-	dw1000_tx_complete(dw, skb);
-}
-
-/**
- * dw1000_tx_irq() - Handle Transmit Frame Sent (TXFRS) event
+ * dw1000_rx_frame() - Handle Receiver Data Frame event
  *
  * @dw:			DW1000 device
  */
-static void dw1000_tx_irq(struct dw1000 *dw)
-{
-	struct dw1000_tx *tx = &dw->tx;
-	struct dw1000_tsinfo *tsi = &tx->tsinfo;
-	struct skb_shared_hwtstamps hwtstamps;
-	struct sk_buff *skb;
-	unsigned long flags;
-	int rc;
-
-	/* Ignore if data SPI message has not yet completed */
-	spin_lock_irqsave(&dw->tx_lock, flags);
-	if (!(tx->skb && tx->data_complete)) {
-		dev_err_ratelimited(dw->dev, "spurious TXFRS event\n");
-		spin_unlock_irqrestore(&dw->tx_lock, flags);
-		return;
-	}
-	spin_unlock_irqrestore(&dw->tx_lock, flags);
-
-	/* Send information SPI message */
-	if ((rc = spi_sync(dw->spi, &tx->info)) != 0) {
-		dev_err(dw->dev, "TX information message failed: %d\n", rc);
-		spin_lock_irqsave(&dw->tx_lock, flags);
-		skb = tx->skb;
-		tx->skb = NULL;
-		spin_unlock_irqrestore(&dw->tx_lock, flags);
-		dw1000_tx_complete(dw, skb);
-		return;
-	}
-
-	/* Assign ADC SAR results */
-	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		tsi->temp = DW1000_SAR_TEMP_MDEGC(tx->adc.temp, dw->tmeas_23c) / 10;
-		tsi->volt = DW1000_SAR_VBAT_MVOLT(tx->adc.volt, dw->vmeas_3v3);
-#ifdef DW1000_VOLTAGE_CHECK
-		if (tsi->volt < 3000)
-			dev_warn_ratelimited(dw->dev, "[Tx] low voltage: %dmV (0x%02x)\n",
-					     tsi->volt, tx->adc.volt);
-#endif
-	}
-
-	/* Record hardware timestamp, if applicable */
-	spin_lock_irqsave(&dw->tx_lock, flags);
-	skb = tx->skb;
-	tx->skb = NULL;
-	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_IN_PROGRESS)) {
-		dw1000_timestamp(dw, &tx->time, &hwtstamps);
-		dw1000_tsinfo(dw, &tx->time, tsi, &hwtstamps);
-		skb_tstamp_tx(skb, &hwtstamps);
-	}
-	spin_unlock_irqrestore(&dw->tx_lock, flags);
-
-	/* Report successful completion */
-	dw1000_tx_complete(dw, skb);
-}
-
-/**
- * dw1000_tx_complete() - Complete transmission
- *
- * @dw:			DW1000 device
- * @skb:		Socket buffer
- */
-static void dw1000_tx_complete(struct dw1000 *dw, struct sk_buff *skb)
-{
-	size_t sifs_max_len;
-
-	/* Sanity check */
-	if (unlikely(!skb)) {
-		dev_err(dw->dev, "spurious TX completion\n");
-		return;
-	}
-
-	/* Report completion to IEEE 802.15.4 stack */
-	sifs_max_len = (IEEE802154_MAX_SIFS_FRAME_SIZE - IEEE802154_FCS_LEN);
-	ieee802154_xmit_complete(dw->hw, skb, (skb->len <= sifs_max_len));
-}
-
-/******************************************************************************
- *
- * Receive datapath
- *
- */
-
-/**
- * dw1000_rx_prepare() - Prepare receive SPI messages
- *
- * @dw:			DW1000 device
- * @return:		0 on success or -errno
- */
-static int dw1000_rx_prepare(struct dw1000 *dw)
-{
-	struct dw1000_rx *rx = &dw->rx;
-	struct dw1000_sar *sar = &dw->sar;
-
-	/* Initialise receive descriptor */
-	memset(rx, 0, sizeof(*rx));
-
-	/* Set contant values used in SPI transfer */
-	rx->hrbpt = DW1000_SYS_CTRL3_HRBPT;
-	rx->rxena = DW1000_SYS_CTRL1_RXENAB;
-	rx->mask0 = 0;
-	rx->mask1 = cpu_to_le32(DW1000_SYS_MASK_MACTIVE);
-	rx->clear = cpu_to_le32(DW1000_RX_STATE_CLEAR);
-
-	/* Prepare information SPI message */
-	spi_message_init_no_memset(&rx->info);
-	dw1000_init_read(&rx->info, &rx->rx_finfo, DW1000_RX_FINFO, 0,
-			 &rx->finfo, sizeof(rx->finfo));
-	dw1000_init_read(&rx->info, &rx->rx_time, DW1000_RX_TIME, 0,
-			 &rx->time, sizeof(rx->time));
-	dw1000_init_read(&rx->info, &rx->rx_fqual, DW1000_RX_FQUAL, 0,
-			 &rx->fqual, sizeof(rx->fqual));
-
-	/* Include Time Tracking only if enabled */
-	if (dw1000_tsinfo_ena & DW1000_TSINFO_TTCK) {
-		dw1000_init_read(&rx->info, &rx->rx_ttcki, DW1000_RX_TTCKI, 0,
-				 &rx->ttcki, sizeof(rx->ttcki.raw));
-		dw1000_init_read(&rx->info, &rx->rx_ttcko, DW1000_RX_TTCKO, 0,
-				 &rx->ttcko, sizeof(rx->ttcko.raw));
-	}
-
-	dw1000_init_read(&rx->info, &rx->dig_diag, DW1000_DIG_DIAG,
-			 DW1000_EVC_OVR, &rx->evc_ovr, sizeof(rx->evc_ovr));
-	dw1000_init_read(&rx->info, &rx->sys_status, DW1000_SYS_STATUS, 0,
-			 &rx->status, sizeof(rx->status));
-
-	/* Include SAR ADC control only if enabled */
-	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		dw1000_init_write(&rx->info, &rx->sarc_a1, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_A, &sar->ctrl_a1, sizeof(sar->ctrl_a1));
-		dw1000_init_write(&rx->info, &rx->sarc_b1, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b1, sizeof(sar->ctrl_b1));
-		dw1000_init_write(&rx->info, &rx->sarc_b2, DW1000_RF_CONF,
-				  DW1000_RF_SENSOR_SARC_B, &sar->ctrl_b2, sizeof(sar->ctrl_b2));
-		dw1000_init_write(&rx->info, &rx->sarc_ena, DW1000_TX_CAL,
-				  DW1000_TC_SARC, &sar->ctrl_ena, sizeof(sar->ctrl_ena));
-	}
-
-	/* Prepare data SPI message */
-	spi_message_init_no_memset(&rx->data);
-	dw1000_init_read(&rx->data, &rx->rx_buffer, DW1000_RX_BUFFER, 0,
-			 NULL, 0);
-	dw1000_init_write(&rx->data, &rx->sys_ctrl, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL3, &rx->hrbpt, sizeof(rx->hrbpt));
-
-	/* Include SAR ADC control only if enabled */
-	if (dw1000_tsinfo_ena & DW1000_TSINFO_SADC) {
-		dw1000_init_write(&rx->data, &rx->sarc_dis, DW1000_TX_CAL,
-				  DW1000_TC_SARC, &sar->ctrl_dis, sizeof(sar->ctrl_dis));
-		dw1000_init_read(&rx->data, &rx->sarl, DW1000_TX_CAL,
-				 DW1000_TC_SARL, &rx->adc.raw, sizeof(rx->adc.raw));
-	}
-
-	/* Prepare recovery SPI message */
-	spi_message_init_no_memset(&rx->rcvr);
-	dw1000_init_write(&rx->rcvr, &rx->rv_mask0, DW1000_SYS_MASK,
-			  0, &rx->mask0, sizeof(rx->mask0));
-	dw1000_init_write(&rx->rcvr, &rx->rv_status, DW1000_SYS_STATUS,
-			  0, &rx->clear, sizeof(rx->clear));
-	dw1000_init_write(&rx->rcvr, &rx->rv_mask1, DW1000_SYS_MASK,
-			  0, &rx->mask1, sizeof(rx->mask1));
-	dw1000_init_write(&rx->rcvr, &rx->rv_hrbpt, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL3, &rx->hrbpt, sizeof(rx->hrbpt));
-	dw1000_init_write(&rx->rcvr, &rx->rv_rxenab, DW1000_SYS_CTRL,
-			  DW1000_SYS_CTRL1, &rx->rxena, sizeof(rx->rxena));
-
-	return 0;
-}
-
-/**
- * dw1000_rx_irq() - Handle Receiver Data Frame Ready (RXDFR) event
- *
- * @dw:			DW1000 device
- */
-static void dw1000_rx_irq(struct dw1000 *dw)
+static void dw1000_rx_frame(struct dw1000 *dw)
 {
 	struct dw1000_rx *rx = &dw->rx;
 	struct sk_buff *skb;
-	uint32_t finfo, status, overruns;
+	uint32_t finfo, status;
 	size_t len;
 	int rc;
-
-	/* Send information SPI message */
-	if ((rc = spi_sync(dw->spi, &rx->info)) != 0) {
-		dev_err(dw->dev, "RX information message failed: %d\n", rc);
-		goto err_info;
-	}
 
 	/* The double buffering implementation in the DW1000 is
 	 * somewhat flawed.  A packet arriving while there are no
@@ -2234,59 +2615,37 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	 * detected at this point then we are safe to read the
 	 * remaining data even if a subsequent overrun occurs before
 	 * our data read is complete.
-	 *
-	 * The best way to detect an overrun is to check the
-	 * HSRBP/ICRBP sync. When entering the RX interrupt, the
-	 * RBP bits should have the opposite values. Once the RX is
-	 * performed, and the buffer toggled, the RBP bits should
-	 * have equal values. If this is not the case, recovery
-	 * procedure is executed.
-	 *
-	 * We explicitly do not follow Decawave's documented
-	 * instruction to reset the receiver when an overrun occurs.
-	 * Resetting the receiver is highly disruptive to both the
-	 * receive and transmit datapaths, tends to cause further
-	 * receive overruns due to the time taken for the reset, and
-	 * often results in a dead receiver since the post-reset
-	 * RXENAB command is frequently ignored by the hardware.
-	 *
-	 * Instead, we simply discard the received frame and toggle
-	 * HRBPT as for a normally received frame.
 	 */
 
+	/* Send information SPI message */
+	if ((rc = spi_sync(dw->spi, &rx->spi_info)) != 0) {
+		dev_err(dw->dev, "RX information message failed: %d\n", rc);
+		dw1000_stats_inc(dw, DW1000_STATS_SPI_ERROR);
+		goto err_info;
+	}
 	status = le32_to_cpu(rx->status);
 
-	/* RX out-of-sync check */
-	if (unlikely(!DW1000_HSRPB_SYNC(status))) {
-#ifdef DW1000_SYNC_LOST_WARN
-		dev_warn_ratelimited(dw->dev, "RX sync lost after %d frames; "
-				    "recovering\n", dw->rx_sync_cnt);
-#endif
-		goto err_recover2;
-	}
-
-	/* RX overruns check */
-	overruns = le16_to_cpu(rx->evc_ovr);
-	if (unlikely(overruns != dw->rx_overruns)) {
-		dev_warn_ratelimited(dw->dev, "RX overruns (%d) detected; "
-				     "recovering\n",
-				     ((overruns - dw->rx_overruns) &
-				      DW1000_EVC_OVR_MASK));
-		dw->rx_overruns = overruns;
-		goto err_recover;
-        }
-
+	INJECT_ERROR(dw, RX_SYS_STATUS, status);
+	
 	/* Double buffering overrun check */
 	if (unlikely(status & DW1000_SYS_STATUS_RXOVRR)) {
-		dev_warn_ratelimited(dw->dev, "RX overrun detected; "
-				     "recovering\n");
+		dw1000_stats_inc(dw, DW1000_STATS_RX_OVRR);
 		goto err_recover;
 	}
-
-	/* Data frame ready not set? */
-	if (unlikely((status & DW1000_SYS_STATUS_RXDFR) == 0)) {
-		dev_warn_ratelimited(dw->dev, "RXDFR not set; recovering\n");
-		goto err_recover;
+	/* FCS Error */
+	if (unlikely(status & DW1000_SYS_STATUS_RXFCE)) {
+		dw1000_stats_inc(dw, DW1000_STATS_RX_FCE);
+		goto err_discard;
+	}
+	/* FCS Good not set */
+	if (unlikely(!(status & DW1000_SYS_STATUS_RXFCG))) {
+		dw1000_stats_inc(dw, DW1000_STATS_RX_FCG);
+		goto err_discard;
+	}
+	/* Data frame ready not set */
+	if (unlikely(!(status & DW1000_SYS_STATUS_RXDFR))) {
+		dw1000_stats_inc(dw, DW1000_STATS_RX_DFR);
+		goto err_discard;
 	}
 
 	/* Estimate link quality */
@@ -2294,10 +2653,7 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 
 	/* Frame is invalid */
 	if (!rx->frame_valid)
-		goto err_recover;
-
-	/* Increment RX sync counter */
-	dw->rx_sync_cnt++;
+		goto err_discard;
 
 	/* Frame length */
 	finfo = le32_to_cpu(rx->finfo);
@@ -2311,82 +2667,52 @@ static void dw1000_rx_irq(struct dw1000 *dw)
 	}
 	skb_put(skb, len);
 
-	/* Record hardware timestamp, if viable */
+	/* Record hardware ptp timestamp, if valid */
 	if (rx->timestamp_valid)
-		dw1000_timestamp(dw, &rx->time.rx_stamp, skb_hwtstamps(skb));
+		dw1000_ptp_timestamp(dw, &rx->time.rx_stamp,
+				     skb_hwtstamps(skb));
 
-	/* Record timestamp info */
-	dw1000_tsinfo(dw, &rx->time.rx_stamp, &rx->tsinfo, skb_hwtstamps(skb));
+	/* Record ptp timestamp info */
+	dw1000_ptp_tsinfo(dw, &rx->time.rx_stamp,
+			  &rx->tsinfo, skb_hwtstamps(skb));
 
 	/* Update data SPI message */
-	rx->rx_buffer.data.rx_buf = skb->data;
-	rx->rx_buffer.data.len = len;
+	rx->spi_buffer.data.rx_buf = skb->data;
+	rx->spi_buffer.data.len = len;
+
+	INJECT_ERROR(dw, RX_DELAY);
 
 	/* Send data SPI message */
-	if ((rc = spi_sync(dw->spi, &rx->data)) != 0) {
-		dev_err(dw->dev, "RX data message failed: %d\n", rc);
+	if ((rc = spi_sync(dw->spi, &rx->spi_data)) != 0) {
+		dw1000_stats_inc(dw, DW1000_STATS_SPI_ERROR);
 		goto err_data;
 	}
 
 	/* Hand off to IEEE 802.15.4 stack */
 	ieee802154_rx_irqsafe(dw->hw, skb, rx->lqi);
+
+	/* Statistics */
+	dw1000_stats_inc(dw, DW1000_STATS_RX_FRAME);
+	
 	return;
 
  err_data:
 	dev_kfree_skb_any(skb);
  err_alloc:
  err_info:
+	dw1000_stats_inc(dw, DW1000_STATS_RX_ERROR);
+	dw1000_enqueue(dw, DW1000_ERROR_WORK);
 	return;
 
- err_recover2:
-	/* Reset RX sync counter */
-	dw->rx_sync_cnt = 0;
-
-	/* Send recovery SPI message */
-	if ((rc = spi_sync(dw->spi, &rx->rcvr)) != 0) {
-		dev_err(dw->dev, "RX recovery#2 failed: %d\n", rc);
-	}
-
+ err_discard:
+	dw1000_stats_inc(dw, DW1000_STATS_RX_ERROR);
+	dw1000_rx_resync(dw);
+	return;
+	
  err_recover:
-	/* Send recovery SPI message */
-	if ((rc = spi_sync(dw->spi, &rx->rcvr)) != 0) {
-		dev_err(dw->dev, "RX recovery#1 failed: %d\n", rc);
-	}
-}
-
-/******************************************************************************
- *
- * Interrupt handling
- *
- */
-
-/**
- * dw1000_isr_thread() - Interrupt handler thread
- *
- * @irq:		Interrupt number
- * @context:		DW1000 device
- * @return:		IRQ status
- */
-static irqreturn_t dw1000_isr_thread(int irq, void *context)
-{
-	struct dw1000 *dw = context;
-	unsigned int sys_status;
-	int rc;
-
-	/* Read interrupt status register */
-	if ((rc = regmap_read(dw->sys_status.regs, 0, &sys_status)) != 0)
-		goto abort;
-
-	/* Handle transmit completion, if applicable */
-	if (sys_status & DW1000_SYS_STATUS_TXFRS)
-		dw1000_tx_irq(dw);
-
-	/* Handle received packet or receive overrun, if applicable */
-	if (sys_status & (DW1000_SYS_STATUS_RXDFR | DW1000_SYS_STATUS_RXOVRR))
-		dw1000_rx_irq(dw);
-
- abort:
-	return IRQ_HANDLED;
+	dw1000_stats_inc(dw, DW1000_STATS_RX_ERROR);
+	dw1000_rx_recover(dw);
+	return;
 }
 
 
@@ -2397,95 +2723,65 @@ static irqreturn_t dw1000_isr_thread(int irq, void *context)
  */
 
 /**
- * dw1000_start() - Start device operation
+ * dw1000_ieee802154_start() - Start device operation
  *
  * @hw:			IEEE 802.15.4 device
  * @return:		0 on success or -errno
  */
-static int dw1000_start(struct ieee802154_hw *hw)
+static int dw1000_ieee802154_start(struct ieee802154_hw *hw)
 {
 	struct dw1000 *dw = hw->priv;
-	int sys_status;
-	int rc;
 
-	/* Prepare sarc descriptor */
-	if ((rc = dw1000_sar_prepare(dw)) != 0) {
-		dev_err(dw->dev, "SAR preparation failed: %d\n", rc);
-		goto err_sar_prepare;
-	}
-
-	/* Prepare transmit descriptor */
-	if ((rc = dw1000_tx_prepare(dw)) != 0) {
-		dev_err(dw->dev, "TX preparation failed: %d\n", rc);
-		goto err_tx_prepare;
-	}
-
-	/* Prepare receive descriptor */
-	if ((rc = dw1000_rx_prepare(dw)) != 0) {
-		dev_err(dw->dev, "RX preparation failed: %d\n", rc);
-		goto err_rx_prepare;
-	}
-
-	/* Ensure that HSRBP and ICRBP are in sync */
-	if ((rc = regmap_read(dw->sys_status.regs, 0, &sys_status)) != 0)
-		goto err_sys_status;
-	if (!DW1000_HSRPB_SYNC(sys_status)) {
-		if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
-				       DW1000_SYS_CTRL3_HRBPT)) != 0)
-			goto err_sys_ctrl3;
-	}
-
-	/* Enable interrupt generation */
-	if ((rc = regmap_write(dw->sys_mask.regs, 0,
-			       DW1000_SYS_MASK_MACTIVE)) != 0)
-		goto err_sys_mask;
-
-	/* Enable receiver */
-	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL1,
-			       DW1000_SYS_CTRL1_RXENAB)) != 0)
-		goto err_sys_ctrl1;
-
-	dev_info(dw->dev, "started\n");
+	dev_dbg(dw->dev, "ieee802154 stack start\n");
+	
+	dw->stm.ieee802154_enabled = true;
+	dw1000_enqueue_wait(dw, DW1000_STACK_WORK);
+	
 	return 0;
-
-	regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
-		     DW1000_SYS_CTRL0_TRXOFF);
- err_sys_ctrl1:
-	regmap_write(dw->sys_mask.regs, 0, 0);
- err_sys_mask:
- err_sys_ctrl3:
- err_sys_status:
- err_rx_prepare:
- err_tx_prepare:
- err_sar_prepare:
-	return rc;
 }
 
 /**
- * dw1000_stop() - Stop device operation
+ * dw1000_ieee802154_stop() - Stop device operation
  *
  * @hw:			IEEE 802.15.4 device
  */
-static void dw1000_stop(struct ieee802154_hw *hw)
+static void dw1000_ieee802154_stop(struct ieee802154_hw *hw)
 {
 	struct dw1000 *dw = hw->priv;
-	int rc;
+	
+	dev_dbg(dw->dev, "ieee802154 stack stop\n");
 
-	/* Disable further interrupt generation */
-	if ((rc = regmap_write(dw->sys_mask.regs, 0, 0)) != 0) {
-		dev_err(dw->dev, "could not disable interrupts: %d\n", rc);
+	dw->stm.ieee802154_enabled = false;
+	dw1000_enqueue_wait(dw, DW1000_STACK_WORK);
+}
+
+/**
+ * dw1000_xmit_async() - Accept a packet for transmission
+ *
+ * @hw:			IEEE 802.15.4 device
+ * @skb:		Socket buffer
+ * @return:		0 on success or -errno
+ */
+static int dw1000_xmit_async(struct ieee802154_hw *hw, struct sk_buff *skb)
+{
+	struct dw1000 *dw = hw->priv;
+	struct dw1000_tx *tx = &dw->tx;
+	unsigned long flags;
+
+	/* Acquire TX lock */
+	spin_lock_irqsave(&tx->lock, flags);
+
+	/* Sanity check */
+	if (tx->skb) {
+		spin_unlock_irqrestore(&tx->lock, flags);
+		dev_err(dw->dev, "concurrent transmit is not supported\n");
+		return -ENOBUFS;
 	}
+	tx->skb = skb;
+	spin_unlock_irqrestore(&tx->lock, flags);
 
-	/* Complete any pending interrupt work */
-	synchronize_irq(dw->spi->irq);
-
-	/* Disable receiver and transmitter */
-	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
-			       DW1000_SYS_CTRL0_TRXOFF)) != 0) {
-		dev_err(dw->dev, "could not disable TX/RX: %d\n", rc);
-	}
-
-	dev_info(dw->dev, "stopped\n");
+	dw1000_enqueue(dw, DW1000_TX_WORK);
+	return 0;
 }
 
 /**
@@ -2521,8 +2817,9 @@ static int dw1000_ed(struct ieee802154_hw *hw, u8 *level)
 			  ((edg1 * DW1000_EDG1_MULT) >> DW1000_EDG1_SHIFT));
 	}
 
-	dev_dbg(dw->dev, "detected energy level %d on channel %d (EDG1=%d, "
-		"EDV2=%d)\n", *level, dw->phy->current_channel, edg1, edv2);
+	dev_dbg(dw->dev, "detected energy level %d on channel %d "
+		"(EDG1=%d, EDV2=%d)\n",
+		*level, dw->hw->phy->current_channel, edg1, edv2);
 	return 0;
 }
 
@@ -2563,50 +2860,53 @@ static int dw1000_set_hw_addr_filt(struct ieee802154_hw *hw,
 				   unsigned long changed)
 {
 	struct dw1000 *dw = hw->priv;
-	unsigned int pan_id;
-	unsigned int short_addr;
+	struct dw1000_config *cfg = &dw->cfg;
 	int rc;
-
+	
+	/* Lock configuration */
+	mutex_lock(&cfg->mutex);
+	
 	/* Set PAN ID */
 	if (changed & IEEE802154_AFILT_PANID_CHANGED) {
-		pan_id = le16_to_cpu(filt->pan_id);
-		if ((rc = regmap_write(dw->panadr.regs, DW1000_PANADR_PAN_ID,
-				       pan_id)) != 0)
-			return rc;
-		dev_dbg(dw->dev, "set PAN ID %04x\n", pan_id);
+		cfg->pan_id = le16_to_cpu(filt->pan_id);
+		cfg->pending |= DW1000_CONFIGURE_PAN_ID;
+		dev_dbg(dw->dev, "set PAN ID %04x\n", cfg->pan_id);
 	}
 
 	/* Set short address */
 	if (changed & IEEE802154_AFILT_SADDR_CHANGED) {
-		short_addr = le16_to_cpu(filt->short_addr);
-		if ((rc = regmap_write(dw->panadr.regs,
-				       DW1000_PANADR_SHORT_ADDR,
-				       short_addr)) != 0)
-			return rc;
-		dev_dbg(dw->dev, "set short address %04x\n", short_addr);
+		cfg->short_addr = le16_to_cpu(filt->short_addr);
+		cfg->pending |= DW1000_CONFIGURE_SHORT_ADDR;
+		dev_dbg(dw->dev, "set short address %04x\n",
+			cfg->short_addr);
 	}
 
 	/* Set EUI-64 */
 	if (changed & IEEE802154_AFILT_IEEEADDR_CHANGED) {
-		if ((rc = regmap_raw_write(dw->eui.regs, 0, &filt->ieee_addr,
-					   sizeof(filt->ieee_addr))) != 0)
-			return rc;
+		cfg->ieee_addr = filt->ieee_addr;
+		cfg->pending |= DW1000_CONFIGURE_IEEE_ADDR;
 		dev_dbg(dw->dev, "set EUI-64 %016llx\n",
-			le64_to_cpu(filt->ieee_addr));
+			le64_to_cpu(cfg->ieee_addr));
 	}
 
 	/* Set coordinator status */
 	if (changed & IEEE802154_AFILT_PANC_CHANGED) {
-		if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0,
-					     DW1000_SYS_CFG_FFBC,
-					     (filt->pan_coord ?
-					      DW1000_SYS_CFG_FFBC : 0))) != 0)
-			return rc;
+		if (filt->pan_coord)
+			cfg->frame_filter |= DW1000_SYS_CFG_FFBC;
+		else
+			cfg->frame_filter &= ~DW1000_SYS_CFG_FFBC;
+		cfg->pending |= DW1000_CONFIGURE_FRAME_FILTER;
 		dev_dbg(dw->dev, "PAN coordinator role %sabled\n",
 			(filt->pan_coord ? "en" : "dis"));
 	}
 
-	return 0;
+	/* Unlock configuration */
+	mutex_unlock(&cfg->mutex);
+	
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
+
+	return rc;
 }
 
 /**
@@ -2619,28 +2919,37 @@ static int dw1000_set_hw_addr_filt(struct ieee802154_hw *hw,
 static int dw1000_set_promiscuous_mode(struct ieee802154_hw *hw, bool on)
 {
 	struct dw1000 *dw = hw->priv;
+	struct dw1000_config *cfg = &dw->cfg;
 	int rc;
-
+	
 	/* Enable/disable frame filtering */
-	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, DW1000_SYS_CFG_FFEN,
-				     (on ? 0 : DW1000_SYS_CFG_FFEN))) != 0)
-		return rc;
-	dev_dbg(dw->dev, "promiscuous mode %sabled\n", (on ? "en" : "dis"));
+	mutex_lock(&cfg->mutex);
+	if (on)
+		cfg->frame_filter &= ~DW1000_SYS_CFG_FFEN;
+	else
+		cfg->frame_filter |= DW1000_SYS_CFG_FFEN;
+	cfg->pending |= DW1000_CONFIGURE_FRAME_FILTER;
+	mutex_unlock(&cfg->mutex);
+	
+	/* Reconfigure changes */
+	rc = dw1000_reconfigure(dw);
 
-	return 0;
+	dev_dbg(dw->dev, "promiscuous mode %sabled\n", (on ? "en" : "dis"));
+	return rc;
 }
 
 /* IEEE 802.15.4 operations */
 static const struct ieee802154_ops dw1000_ops = {
 	.owner = THIS_MODULE,
-	.start = dw1000_start,
-	.stop = dw1000_stop,
-	.xmit_async = dw1000_tx,
+	.start = dw1000_ieee802154_start,
+	.stop = dw1000_ieee802154_stop,
+	.xmit_async = dw1000_xmit_async,
 	.ed = dw1000_ed,
 	.set_channel = dw1000_set_channel,
 	.set_hw_addr_filt = dw1000_set_hw_addr_filt,
 	.set_promiscuous_mode = dw1000_set_promiscuous_mode,
 };
+
 
 /******************************************************************************
  *
@@ -2680,25 +2989,20 @@ static int dw1000_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 {
 	struct dw1000 *dw = dev_get_drvdata(dev);
 	struct dw1000_sar *sar = &dw->sar;
-	int rc;
-
-	/* Send SPI message */
-	if ((rc = spi_sync(dw->spi, &sar->msg)) != 0)
-		return rc;
 
 	/* Convert result */
 	switch (type) {
-	case hwmon_in:
-		*val = DW1000_SAR_VBAT_MVOLT(sar->adc.volt, dw->vmeas_3v3);
-		dev_dbg(dw->dev, "voltage %#x (%#x @ 3.3V) is %ldmV\n",
-			sar->adc.volt, dw->vmeas_3v3, *val);
+	    case hwmon_in:
+		*val = dw1000_sar_get_volt(dw);
+		dev_dbg(dw->dev, "hwmon voltage %#x (%#x @3.3V) is %ldmV\n",
+			sar->adc.volt, dw->vcalib_3v3, *val);
 		break;
-	case hwmon_temp:
-		*val = DW1000_SAR_TEMP_MDEGC(sar->adc.temp, dw->tmeas_23c);
-		dev_dbg(dw->dev, "temperature %#x (%#x @ 23degC) is %ldmdegC\n",
-			sar->adc.temp, dw->tmeas_23c, *val);
+	    case hwmon_temp:
+		*val = dw1000_sar_get_temp(dw);
+		dev_dbg(dw->dev, "hwmon temperature %#x (%#x @23C) is %ldmC\n",
+			sar->adc.temp, dw->tcalib_23c, *val);
 		break;
-	default:
+	    default:
 		return -EINVAL;
 	}
 
@@ -2748,6 +3052,7 @@ static const struct hwmon_chip_info dw1000_hwmon_chip = {
 	.ops = &dw1000_hwmon_ops,
 };
 
+
 /******************************************************************************
  *
  * Device attributes
@@ -2760,18 +3065,22 @@ static const struct hwmon_chip_info dw1000_hwmon_chip = {
 #define DW1000_ATTR_RO(_name, _mode) \
 	DEVICE_ATTR(_name, _mode, dw1000_show_##_name, NULL)
 
+#define DW1000_ATTR_WR(_name, _mode) \
+	DEVICE_ATTR(_name, _mode, NULL, dw1000_store_##_name)
+
 /* Calibration profile */
 static ssize_t dw1000_show_profile(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	struct dw1000_calib *cb;
 	int i, count = 0;
 
 	for (i=0; i<DW1000_MAX_CALIBS; i++) {
 		cb = &dw->calib[i];
 		if (cb->id[0])
-			count += sprintf(buf + count, "%s,%d,%d,0x%04x,0x%08x\n",
+			count += sprintf(buf + count,
+					 "%s,%d,%d,0x%04x,0x%08x\n",
 					 cb->id, cb->ch, dw1000_prfs[cb->prf],
 					 cb->antd, cb->power);
 	}
@@ -2781,7 +3090,7 @@ static ssize_t dw1000_store_profile(struct device *dev,
 				    struct device_attribute *attr,
 				    const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	char name[DW1000_CALIB_ID_LEN];
 	int rc, i;
 
@@ -2800,15 +3109,15 @@ static DW1000_ATTR_RW(profile, 0644);
 static ssize_t dw1000_show_xtalt(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 
-	return sprintf(buf, "%d\n", dw->xtalt);
+	return sprintf(buf, "%d\n", dw->cfg.xtalt);
 }
 static ssize_t dw1000_store_xtalt(struct device *dev,
 				  struct device_attribute *attr,
 				  const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	unsigned int trim;
 	int rc;
 
@@ -2824,15 +3133,15 @@ static DW1000_ATTR_RW(xtalt, 0644);
 static ssize_t dw1000_show_channel(struct device *dev,
 				  struct device_attribute *attr, char *buf)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 
-	return sprintf(buf, "%d\n", dw->channel);
+	return sprintf(buf, "%d\n", dw->cfg.channel);
 }
 static ssize_t dw1000_store_channel(struct device *dev,
 				   struct device_attribute *attr,
 				   const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	int channel;
 	int rc;
 
@@ -2848,15 +3157,15 @@ static DW1000_ATTR_RW(channel, 0644);
 static ssize_t dw1000_show_pcode(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 
-	return sprintf(buf, "%d\n", dw1000_pcode(dw));
+	return sprintf(buf, "%d\n", dw1000_get_pcode(&dw->cfg));
 }
 static ssize_t dw1000_store_pcode(struct device *dev,
 				  struct device_attribute *attr,
 				  const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	int pcode;
 	int rc;
 
@@ -2872,15 +3181,15 @@ static DW1000_ATTR_RW(pcode, 0644);
 static ssize_t dw1000_show_prf(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 
-	return sprintf(buf, "%d\n", dw1000_prfs[dw->prf]);
+	return sprintf(buf, "%d\n", dw1000_prfs[dw->cfg.prf]);
 }
 static ssize_t dw1000_store_prf(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	int raw;
 	int prf;
 	int rc;
@@ -2899,15 +3208,15 @@ static DW1000_ATTR_RW(prf, 0644);
 static ssize_t dw1000_show_antd(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 
-	return sprintf(buf, "0x%4x\n", dw->antd[dw->prf]);
+	return sprintf(buf, "0x%4x\n", dw->cfg.antd[dw->cfg.prf]);
 }
 static ssize_t dw1000_store_antd(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	unsigned int delay;
 	int rc;
 
@@ -2923,17 +3232,16 @@ static DW1000_ATTR_RW(antd, 0644);
 static ssize_t dw1000_show_rate(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 
-	return sprintf(buf, "%d\n", dw1000_rates[dw->rate]);
+	return sprintf(buf, "%d\n", dw1000_rates[dw->cfg.rate]);
 }
 static ssize_t dw1000_store_rate(struct device *dev,
 				 struct device_attribute *attr,
 				 const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
-	int raw;
-	int rate;
+	struct dw1000 *dw = dev_to_dw1000(dev);
+	int raw, rate;
 	int rc;
 
 	if ((rc = kstrtoint(buf, 0, &raw)) != 0)
@@ -2950,15 +3258,16 @@ static DW1000_ATTR_RW(rate, 0644);
 static ssize_t dw1000_show_txpsr(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
+	struct dw1000_config *cfg = &dw->cfg;
 
-	return sprintf(buf, "%d\n", dw1000_txpsrs[dw1000_txpsr(dw)]);
+	return sprintf(buf, "%d\n", dw1000_txpsrs[dw1000_get_txpsr(cfg)]);
 }
 static ssize_t dw1000_store_txpsr(struct device *dev,
 				  struct device_attribute *attr,
 				  const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	int raw;
 	int txpsr;
 	int rc;
@@ -2977,21 +3286,23 @@ static DW1000_ATTR_RW(txpsr, 0644);
 static ssize_t dw1000_show_tx_power(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
-	struct dw1000 *dw = to_dw1000(dev);
-
+	struct dw1000 *dw = dev_to_dw1000(dev);
+	struct dw1000_config *cfg = &dw->cfg;
+	
 	return sprintf(buf, "0x%02x%02x%02x%02x\n",
-		       dw->txpwr[3], dw->txpwr[2], dw->txpwr[1], dw->txpwr[0]);
+		       cfg->txpwr[3], cfg->txpwr[2],
+		       cfg->txpwr[1], cfg->txpwr[0]);
 }
 static ssize_t dw1000_store_tx_power(struct device *dev,
 				     struct device_attribute *attr,
 				     const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	unsigned power;
 	int rc;
 
-	if (kstrtouint(buf, 0, &power) < 0)
-		return -EINVAL;
+	if ((rc = kstrtouint(buf, 0, &power)) != 0)
+		return rc;
 	if ((rc = dw1000_configure_tx_power(dw, power)) != 0)
 		return rc;
 	return count;
@@ -3002,15 +3313,15 @@ static DW1000_ATTR_RW(tx_power, 0644);
 static ssize_t dw1000_show_smart_power(struct device *dev,
 				       struct device_attribute *attr, char *buf)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 
-	return sprintf(buf, "%d\n", dw->smart_power);
+	return sprintf(buf, "%d\n", dw->cfg.smart_power);
 }
 static ssize_t dw1000_store_smart_power(struct device *dev,
 					struct device_attribute *attr,
 					const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	bool smart_power;
 	int rc;
 
@@ -3022,24 +3333,52 @@ static ssize_t dw1000_store_smart_power(struct device *dev,
 }
 static DW1000_ATTR_RW(smart_power, 0644);
 
+/* Frame filter */
+static ssize_t dw1000_show_frame_filter(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct dw1000 *dw = dev_to_dw1000(dev);
+	struct dw1000_config *cfg = &dw->cfg;
+
+	return sprintf(buf, "0x%04x\n", cfg->frame_filter);
+}
+static ssize_t dw1000_store_frame_filter(struct device *dev,
+					 struct device_attribute *attr,
+					 const char *buf, size_t count)
+{
+	struct dw1000 *dw = dev_to_dw1000(dev);
+	unsigned int filter;
+	int rc;
+	
+	if ((rc = kstrtouint(buf, 0, &filter)) != 0)
+		return rc;
+	if ((rc = dw1000_configure_frame_filter(dw, filter)) != 0)
+		return rc;
+	return count;
+}
+static DW1000_ATTR_RW(frame_filter, 0644);
+
 /* Signal to Noise Ratio indicator threshold */
 static ssize_t dw1000_show_snr_threshold(struct device *dev,
 					 struct device_attribute *attr,
 					 char *buf)
+
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 
 	return sprintf(buf, "%d\n", dw->snr_threshold);
 }
 static ssize_t dw1000_store_snr_threshold(struct device *dev,
-					struct device_attribute *attr,
-					const char *buf, size_t count)
+					  struct device_attribute *attr,
+					  const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	unsigned int snr_threshold;
-
-	if (kstrtouint(buf, 0, &snr_threshold) < 0)
-		return -EINVAL;
+	int rc;
+	
+	if ((rc = kstrtouint(buf, 0, &snr_threshold)) != 0)
+		return rc;
 	dw->snr_threshold = snr_threshold;
 	return count;
 }
@@ -3050,19 +3389,20 @@ static ssize_t dw1000_show_fpr_threshold(struct device *dev,
 					 struct device_attribute *attr,
 					 char *buf)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 
 	return sprintf(buf, "%d\n", dw->fpr_threshold);
 }
 static ssize_t dw1000_store_fpr_threshold(struct device *dev,
-					struct device_attribute *attr,
-					const char *buf, size_t count)
+					  struct device_attribute *attr,
+					  const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	unsigned int fpr_threshold;
-
-	if (kstrtouint(buf, 0, &fpr_threshold) < 0)
-		return -EINVAL;
+	int rc;
+	
+	if ((rc = kstrtouint(buf, 0, &fpr_threshold)) != 0)
+		return rc;
 	dw->fpr_threshold = fpr_threshold;
 	return count;
 }
@@ -3073,7 +3413,7 @@ static ssize_t dw1000_show_noise_threshold(struct device *dev,
 					   struct device_attribute *attr,
 					   char *buf)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 
 	return sprintf(buf, "%d\n", dw->noise_threshold);
 }
@@ -3081,31 +3421,102 @@ static ssize_t dw1000_store_noise_threshold(struct device *dev,
 					    struct device_attribute *attr,
 					    const char *buf, size_t count)
 {
-	struct dw1000 *dw = to_dw1000(dev);
+	struct dw1000 *dw = dev_to_dw1000(dev);
 	unsigned int noise_threshold;
-
-	if (kstrtouint(buf, 0, &noise_threshold) < 0)
-		return -EINVAL;
+	int rc;
+	
+	if ((rc = kstrtouint(buf, 0, &noise_threshold)) != 0)
+		return rc;
 	dw->noise_threshold = noise_threshold;
 	return count;
 }
 static DW1000_ATTR_RW(noise_threshold, 0644);
 
+/* Statistics log interval */
+static ssize_t dw1000_show_stats_interval(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	struct dw1000 *dw = dev_to_dw1000(dev);
+
+	return sprintf(buf, "%d\n", dw->stats.interval);
+}
+static ssize_t dw1000_store_stats_interval(struct device *dev,
+					   struct device_attribute *attr,
+					   const char *buf, size_t count)
+{
+	struct dw1000 *dw = dev_to_dw1000(dev);
+	unsigned int interval;
+	int rc;
+	
+	if ((rc = kstrtouint(buf, 0, &interval)) != 0)
+		return rc;
+	dw->stats.interval = interval;
+	if (interval > 0)
+		schedule_delayed_work(&dw->stats.work, interval * HZ);
+	else
+		cancel_delayed_work_sync(&dw->stats.work);
+	return count;
+}
+static DW1000_ATTR_RW(stats_interval, 0644);
+
+#ifdef DW1000_ERROR_INJECT
+/* Error injection */
+static ssize_t dw1000_store_error_inject(struct device *dev,
+					 struct device_attribute *attr,
+					 const char *buf, size_t count)
+{
+	struct dw1000 *dw = dev_to_dw1000(dev);
+	const char *col, *end;
+	int error = 0;
+	int value = 0;
+	int cnt, i;
+	int rc;
+
+	end = strchrnul(buf, '\n');
+	col = strchrnul(buf, ':');
+	cnt = min(col,end) - buf;
+	for (i=1; i<ERROR_INJECT_COUNT; i++) {
+		if (strncasecmp(buf,dw1000_inject_items[i],cnt) == 0) {
+			error = i;
+			break;
+		}
+	}
+	if (!error)
+		return -EINVAL;
+	if (*col) {
+		if ((rc = kstrtoint(col+1, 0, &value)) != 0)
+			return rc;
+	}
+	
+	dw->inject_error = error;
+	dw->inject_value = value;
+	return count;
+}
+static DW1000_ATTR_WR(error_inject, 0200);
+#endif /* DW1000_ERROR_INJECT */
+
 /* Attribute list */
+#define DW1000_SYSFS_ATTR(_name)  &dev_attr_##_name.attr
 static struct attribute *dw1000_attrs[] = {
-	&dev_attr_profile.attr,
-	&dev_attr_xtalt.attr,
-	&dev_attr_channel.attr,
-	&dev_attr_pcode.attr,
-	&dev_attr_prf.attr,
-	&dev_attr_antd.attr,
-	&dev_attr_rate.attr,
-	&dev_attr_txpsr.attr,
-	&dev_attr_tx_power.attr,
-	&dev_attr_smart_power.attr,
-	&dev_attr_snr_threshold.attr,
-	&dev_attr_fpr_threshold.attr,
-	&dev_attr_noise_threshold.attr,
+	DW1000_SYSFS_ATTR(profile),
+	DW1000_SYSFS_ATTR(xtalt),
+	DW1000_SYSFS_ATTR(channel),
+	DW1000_SYSFS_ATTR(pcode),
+	DW1000_SYSFS_ATTR(prf),
+	DW1000_SYSFS_ATTR(antd),
+	DW1000_SYSFS_ATTR(rate),
+	DW1000_SYSFS_ATTR(txpsr),
+	DW1000_SYSFS_ATTR(tx_power),
+	DW1000_SYSFS_ATTR(smart_power),
+	DW1000_SYSFS_ATTR(frame_filter),
+	DW1000_SYSFS_ATTR(snr_threshold),
+	DW1000_SYSFS_ATTR(fpr_threshold),
+	DW1000_SYSFS_ATTR(noise_threshold),
+	DW1000_SYSFS_ATTR(stats_interval),
+#ifdef DW1000_ERROR_INJECT
+	DW1000_SYSFS_ATTR(error_inject),
+#endif /* DW1000_ERROR_INJECT */
 	NULL
 };
 
@@ -3115,11 +3526,346 @@ static struct attribute_group dw1000_attr_group = {
 	.attrs = dw1000_attrs,
 };
 
+
+/******************************************************************************
+ *
+ * Statistics
+ *
+ */
+
+/**
+ * dw1000_stats_inc() - Increment statistics
+ *
+ * @dw:			DW1000 device
+ * @id:                 Stats enum id
+ */
+static inline void dw1000_stats_inc(struct dw1000 *dw, int id)
+{
+	dw->stats.count[id]++;
+}
+
+/**
+ * dw1000_print_stats() - Print changed statistics
+ *
+ * @dw:			DW1000 device
+ */
+
+static void dw1000_stats_print(struct dw1000 *dw)
+{
+	char buf1[20], buf2[20];
+	int i;
+
+	/* Detect changes */
+	if (memcmp(dw->stats.reported, dw->stats.count,
+		   sizeof(dw->stats.reported)) != 0) {
+		dev_dbg(dw->dev, "STATISTICS:\n");
+		for (i=0; i<DW1000_STATS_COUNT; i++) {
+			if (dw->stats.count[i] != dw->stats.reported[i]) {
+				sprintf(buf1, "%+d", dw->stats.count[i] -
+					             dw->stats.reported[i]);
+				sprintf(buf2, "%d", dw->stats.count[i]);
+				dev_dbg(dw->dev, "  %-16s %10s  [%9s]\n",
+					dw1000_stats[i], buf1, buf2);
+				dw->stats.reported[i] = dw->stats.count[i];
+			}
+		}
+	}
+}
+
+#define DW1000_STATS_DEF(_name,_enum)                                         \
+static ssize_t dw1000_show_dw1000_##_name(struct device *dev,                 \
+                struct device_attribute *attr, char *buf)                     \
+{                                                                             \
+        struct dw1000 *dw = dev_to_dw1000(dev);                               \
+        return sprintf(buf, "%d", dw->stats.count[DW1000_STATS_##_enum]);     \
+}                                                                             \
+static ssize_t dw1000_store_dw1000_##_name(struct device *dev,                \
+                struct device_attribute *attr,                                \
+                const char *buf, size_t count)                                \
+{                                                                             \
+        struct dw1000 *dw = dev_to_dw1000(dev);                               \
+        unsigned int value;                                                   \
+        int rc;                                                               \
+        if ((rc = kstrtouint(buf, 0, &value)) != 0)                           \
+                return rc;                                                    \
+        dw->stats.count[DW1000_STATS_##_enum] = value;                        \
+        return count;                                                         \
+}                                                                             \
+static DEVICE_ATTR(dw1000_##_name, 0644,                                      \
+                   dw1000_show_dw1000_##_name,				      \
+		   dw1000_store_dw1000_##_name);			      \
+
+DW1000_STATS_DEF(rx_frame, RX_FRAME)
+DW1000_STATS_DEF(tx_frame, TX_FRAME)
+DW1000_STATS_DEF(rx_error, RX_ERROR)
+DW1000_STATS_DEF(tx_error, TX_ERROR)
+DW1000_STATS_DEF(irq_count, IRQ_COUNT)
+DW1000_STATS_DEF(spi_error, SPI_ERROR)
+DW1000_STATS_DEF(rx_reset, RX_RESET)
+DW1000_STATS_DEF(rx_resync, RX_RESYNC)
+DW1000_STATS_DEF(rx_hsrbp, RX_HSRBP)
+DW1000_STATS_DEF(rx_ovrr, RX_OVRR)
+DW1000_STATS_DEF(rx_dfr, RX_DFR)
+DW1000_STATS_DEF(rx_fcg, RX_FCG)
+DW1000_STATS_DEF(rx_ldedone, RX_LDEDONE)
+DW1000_STATS_DEF(rx_kpi_error, RX_KPI_ERROR)
+DW1000_STATS_DEF(rx_stamp_error, RX_STAMP_ERROR)
+DW1000_STATS_DEF(rx_frame_rep, RX_FRAME_REP)
+DW1000_STATS_DEF(tx_retry, TX_RETRY)
+DW1000_STATS_DEF(snr_reject, SNR_REJECT)
+DW1000_STATS_DEF(fpr_reject, FPR_REJECT)
+DW1000_STATS_DEF(noise_reject, NOISE_REJECT)
+DW1000_STATS_DEF(hard_reset, HARD_RESET)
+
+/* Attribute list */
+#define DW1000_STATS_ATTR(_name)  &dev_attr_dw1000_##_name.attr
+static struct attribute *dw1000_stats_attrs[] = {
+	DW1000_STATS_ATTR(rx_frame),
+	DW1000_STATS_ATTR(tx_frame),
+	DW1000_STATS_ATTR(rx_error),
+	DW1000_STATS_ATTR(tx_error),
+	DW1000_STATS_ATTR(irq_count),
+	DW1000_STATS_ATTR(spi_error),
+	DW1000_STATS_ATTR(rx_reset),
+	DW1000_STATS_ATTR(rx_resync),
+	DW1000_STATS_ATTR(rx_hsrbp),
+	DW1000_STATS_ATTR(rx_ovrr),
+	DW1000_STATS_ATTR(rx_dfr),
+	DW1000_STATS_ATTR(rx_fcg ),
+	DW1000_STATS_ATTR(rx_ldedone),
+	DW1000_STATS_ATTR(rx_kpi_error),
+	DW1000_STATS_ATTR(rx_stamp_error),
+	DW1000_STATS_ATTR(rx_frame_rep),
+	DW1000_STATS_ATTR(tx_retry),
+	DW1000_STATS_ATTR(snr_reject),
+	DW1000_STATS_ATTR(fpr_reject),
+	DW1000_STATS_ATTR(noise_reject),
+	DW1000_STATS_ATTR(hard_reset),
+	NULL
+};
+
+/* Attribute group */
+static struct attribute_group dw1000_stats_attr_group = {
+	.name = "statistics",
+	.attrs = dw1000_stats_attrs,
+};
+
+
+/******************************************************************************
+ *
+ * Event handlers
+ *
+ */
+
+/**
+ * dw1000_stats_work() - Statistics work
+ *
+ * @work:		Worker
+ */
+static void dw1000_stats_work(struct work_struct *work)
+{
+	struct dw1000 *dw = container_of(to_delayed_work(work),
+					 struct dw1000, stats.work);
+	
+	/* Print stats */
+	dw1000_stats_print(dw);
+
+	/* Reschedule worker */
+	if (dw->stats.interval > 0)
+		schedule_delayed_work(&dw->stats.work,
+				      dw->stats.interval * HZ);
+}
+
+/**
+ * dw1000_ptp_timer_handler() - PTP Timer event handler
+ *
+ * @timer:		Timer pointer
+ */
+static void dw1000_ptp_timer_handler(struct timer_list *timer)
+{
+	struct dw1000 *dw = container_of(timer, struct dw1000, ptp.timer);
+
+	dw1000_enqueue(dw, DW1000_PTP_WORK);
+}
+
+/**
+ * dw1000_state_timer_handler() - State timer event handler
+ *
+ * @timer:		Timer pointer
+ */
+static void dw1000_state_timer_handler(struct timer_list *timer)
+{
+	struct dw1000 *dw = container_of(timer, struct dw1000, stm.state_timer);
+
+	dw1000_enqueue(dw, DW1000_TIMER_WORK);
+}
+
+/**
+ * dw1000_adc_timer_handler() - ADC timer event handler
+ *
+ * @timer:		Timer pointer
+ */
+static void dw1000_adc_timer_handler(struct timer_list *timer)
+{
+	struct dw1000 *dw = container_of(timer, struct dw1000, stm.adc_timer);
+
+	dw1000_enqueue(dw, DW1000_ADC_WORK);
+	mod_timer(timer, jiffies +
+		  msecs_to_jiffies(DW1000_ADC_READ_DELAY));
+}
+
+/**
+ * dw1000_irq_handler() - Interrupt handler
+ *
+ * @irq:		Interrupt number
+ * @context:		DW1000 device
+ * @return:		IRQ status
+ */
+static irqreturn_t dw1000_irq_handler(int irq, void *context)
+{
+	struct dw1000 *dw = context;
+
+	dw1000_enqueue_irq(dw);
+	
+	return IRQ_HANDLED;
+}
+
+
 /******************************************************************************
  *
  * Device initialisation
  *
  */
+
+/**
+ * dw1000_poweron() - Power on the device
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_poweron(struct dw1000 *dw)
+{
+	/* Power on the device */
+	if (gpio_is_valid(dw->power_gpio)) {
+		gpio_set_value(dw->power_gpio, 1);
+		msleep(DW1000_POWER_ON_DELAY);
+	}
+
+	/* Release RESET GPIO */
+	if (gpio_is_valid(dw->reset_gpio)) {
+		gpio_set_value(dw->reset_gpio, 1);
+		msleep(DW1000_HARD_RESET_DELAY);
+	}
+
+	return 0;
+}
+
+/**
+ * dw1000_poweroff() - Power off the device
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_poweroff(struct dw1000 *dw)
+{
+	/* Assert RESET GPIO */
+	if (gpio_is_valid(dw->reset_gpio)) {
+		gpio_set_value(dw->reset_gpio, 0);
+		msleep(DW1000_HARD_RESET_DELAY);
+	}
+
+	/* Power off the device */
+	if (gpio_is_valid(dw->power_gpio)) {
+		gpio_set_value(dw->power_gpio, 0);
+		msleep(DW1000_POWER_OFF_DELAY);
+	}
+
+	return 0;
+}
+
+/**
+ * dw1000_enable() - Enable device
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_enable(struct dw1000 *dw)
+{
+	unsigned sys_status;
+	int rc;
+
+	/* Read system status */
+	if ((rc = regmap_read(dw->sys_status.regs, 0, &sys_status)) != 0)
+		goto err_spi;
+
+	/* Ensure that HSRBP and ICRBP are in sync */
+	if (!DW1000_HSRPB_SYNC(sys_status)) {
+		if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL3,
+				       DW1000_SYS_CTRL3_HRBPT)) != 0)
+			goto err_spi;
+	}
+
+	/* Enable RX interrupt generation */
+	if ((rc = regmap_write(dw->sys_mask.regs, 0,
+			       DW1000_SYS_MASK_RX)) != 0)
+		goto err_spi;
+
+	/* Enable receiver */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL1,
+			       DW1000_SYS_CTRL1_RXENAB)) != 0)
+		goto err_spi;
+
+	/* Set state to RX ready */
+	dw1000_set_state(dw, DW1000_STATE_RX);
+	return 0;
+
+ err_spi:
+	dw1000_stats_inc(dw, DW1000_STATS_SPI_ERROR);
+	dw1000_enqueue(dw, DW1000_ERROR_WORK);
+	return rc;
+}
+
+/**
+ * dw1000_disable() - Disable device
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_disable(struct dw1000 *dw)
+{
+	int rc;
+
+	/*
+	 * This is designed not to fail if the device is
+	 * unresponsive or dead. The SPI transactions will
+	 * succeed nontheless, and in the end the device
+	 * should be inactive.
+	 */
+
+	/* Disable further interrupt generation */
+	if ((rc = regmap_write(dw->sys_mask.regs, 0,
+			       DW1000_SYS_MASK_IDLE)) != 0)
+		goto err_spi;
+
+	/* Disable receiver and transmitter */
+	if ((rc = regmap_write(dw->sys_ctrl.regs, DW1000_SYS_CTRL0,
+			       DW1000_SYS_CTRL0_TRXOFF)) != 0)
+		goto err_spi;
+
+	/* Clear pending trx interrupts */
+	if ((rc = regmap_write(dw->sys_status.regs, 0,
+			       DW1000_SYS_STATUS_TRX)) != 0)
+		goto err_spi;
+	
+	/* IDLE state */
+	dw1000_set_state(dw, DW1000_STATE_IDLE);
+	return 0;
+
+ err_spi:
+	dw1000_stats_inc(dw, DW1000_STATS_SPI_ERROR);
+	dw1000_enqueue(dw, DW1000_ERROR_WORK);
+	return rc;
+}
 
 /**
  * dw1000_check_dev_id() - Check device ID
@@ -3162,24 +3908,8 @@ static int dw1000_reset(struct dw1000 *dw)
 {
 	int rc;
 
-	/* Power on the device */
-	if (gpio_is_valid(dw->power_gpio)) {
-		gpio_set_value(dw->power_gpio, 1);
-		msleep(DW1000_POWER_ON_DELAY);
-	}
-
-	/* Release RESET GPIO */
-	if (gpio_is_valid(dw->reset_gpio)) {
-		gpio_set_value(dw->reset_gpio, 1);
-		msleep(DW1000_HARD_RESET_DELAY);
-	}
-
 	/* Force slow SPI clock speed */
 	dw->spi->max_speed_hz = DW1000_SPI_SLOW_HZ;
-
-	/* Read device ID register */
-	if ((rc = dw1000_check_dev_id(dw)) != 0)
-		return rc;
 
 	/* Force system clock to 19.2 MHz XTI clock */
 	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
@@ -3198,7 +3928,7 @@ static int dw1000_reset(struct dw1000 *dw)
 				     DW1000_PMSC_CTRL0_SOFTRESET_MASK)) != 0)
 		return rc;
 
-	/* Recheck device ID to ensure bus is still operational */
+	/* Check device ID to ensure bus is operational */
 	if ((rc = dw1000_check_dev_id(dw)) != 0)
 		return rc;
 
@@ -3220,6 +3950,7 @@ static int dw1000_reset(struct dw1000 *dw)
  */
 static int dw1000_load_xtalt(struct dw1000 *dw)
 {
+	struct dw1000_config *cfg = &dw->cfg;
 	uint32_t value;
 	uint8_t xtalt;
 	int rc;
@@ -3244,7 +3975,7 @@ static int dw1000_load_xtalt(struct dw1000 *dw)
 				"value 0x%02x\n", value);
 	}
 
-	dw->xtalt = xtalt;
+	cfg->xtalt = xtalt;
 
 	dev_dbg(dw->dev, "set xtal trim 0x%02x\n", xtalt);
 	return 0;
@@ -3259,9 +3990,7 @@ static int dw1000_load_xtalt(struct dw1000 *dw)
 static int dw1000_load_ldotune(struct dw1000 *dw)
 {
 	union dw1000_ldotune ldotune;
-	const uint8_t *of_ldotune;
 	unsigned int i;
-	int len;
 	int rc;
 
 	/* Read LDOTUNE calibration value from OTP */
@@ -3272,24 +4001,19 @@ static int dw1000_load_ldotune(struct dw1000 *dw)
 		cpu_to_le32s(ldotune.otp[i]);
 
 	/* Read LDOTUNE calibration value from devicetree */
-	of_ldotune = of_get_property(dw->dev->of_node, "decawave,ldotune",
-				     &len);
-	if (of_ldotune) {
-		if (len == sizeof(ldotune.raw)) {
-			for (i = 0; i < len; i++)
-				ldotune.raw[i] = of_ldotune[len - i - 1];
-		} else {
-			dev_err(dw->dev, "invalid decawave,ldotune length %d\n",
-				len);
-		}
-	}
-
+	rc = of_property_read_variable_u8_array(dw->dev->of_node,
+						"decawave,ldotune",
+						ldotune.raw,
+						sizeof(ldotune.raw),
+						sizeof(ldotune.raw));
+	
 	/* Apply LDOTUNE calibration value, if applicable */
 	if (ldotune.raw[0]) {
 		dev_dbg(dw->dev, "set ldotune %02x:%02x:%02x:%02x:%02x\n",
 			ldotune.raw[4], ldotune.raw[3], ldotune.raw[2],
 			ldotune.raw[1], ldotune.raw[0]);
-		if ((rc = regmap_raw_write(dw->rf_conf.regs, DW1000_RF_LDOTUNE,
+		if ((rc = regmap_raw_write(dw->rf_conf.regs,
+					   DW1000_RF_LDOTUNE,
 					   &ldotune.raw,
 					   sizeof(ldotune.raw))) != 0)
 		    return rc;
@@ -3306,10 +4030,9 @@ static int dw1000_load_ldotune(struct dw1000 *dw)
  */
 static int dw1000_load_eui64(struct dw1000 *dw)
 {
+	struct wpan_phy *phy = dw->hw->phy;
 	union dw1000_eui64 eui64;
-	const uint8_t *of_eui64;
-	unsigned int i;
-	int len;
+	int i;
 	int rc;
 
 	/* Read EUI-64 address from OTP */
@@ -3320,23 +4043,15 @@ static int dw1000_load_eui64(struct dw1000 *dw)
 		cpu_to_le32s(eui64.otp[i]);
 
 	/* Read EUI-64 address from devicetree */
-	of_eui64 = of_get_property(dw->dev->of_node, "decawave,eui64", &len);
-	if (of_eui64) {
-		if (len == sizeof(eui64.raw)) {
-			for (i = 0; i < len; i++)
-				eui64.raw[i] = of_eui64[len - i - 1];
-		} else {
-			dev_err(dw->dev, "invalid decawave,eui64 length %d\n",
-				len);
-		}
-	}
+	rc = of_property_read_u64(dw->dev->of_node, "decawave,eui64",
+				  &eui64.addr);
 
 	/* Use EUI-64 address if valid, otherwise generate random address */
 	if (ieee802154_is_valid_extended_unicast_addr(eui64.addr)) {
-		dw->phy->perm_extended_addr = eui64.addr;
+		phy->perm_extended_addr = eui64.addr;
 	} else {
 		dev_warn(dw->dev, "has no permanent EUI-64 address\n");
-		ieee802154_random_extended_addr(&dw->phy->perm_extended_addr);
+		ieee802154_random_extended_addr(&phy->perm_extended_addr);
 	}
 
 	return 0;
@@ -3350,6 +4065,7 @@ static int dw1000_load_eui64(struct dw1000 *dw)
  */
 static int dw1000_load_delays(struct dw1000 *dw)
 {
+	struct dw1000_config *cfg = &dw->cfg;
 	uint32_t array[2];
 	uint32_t delays;
 	int rc;
@@ -3358,24 +4074,26 @@ static int dw1000_load_delays(struct dw1000 *dw)
 	if ((rc = regmap_read(dw->otp, DW1000_OTP_DELAYS, &delays)) != 0)
 		return rc;
 	if (delays != 0 && delays != 0xfffffffful) {
-		dw->antd[DW1000_PRF_16M] = DW1000_OTP_DELAYS_16M(delays);
-		dw->antd[DW1000_PRF_64M] = DW1000_OTP_DELAYS_64M(delays);
+		cfg->antd[DW1000_PRF_16M] = DW1000_OTP_DELAYS_16M(delays);
+		cfg->antd[DW1000_PRF_64M] = DW1000_OTP_DELAYS_64M(delays);
 	}
 
 	/* Read delays from devicetree */
 	if (of_property_read_u32_array(dw->dev->of_node, "decawave,antd",
 				       array, ARRAY_SIZE(array)) == 0) {
-		if ((array[0] & ~DW1000_ANTD_MASK) || (array[1] & ~DW1000_ANTD_MASK)) {
-			dev_err(dw->dev, "invalid decawave,antd values <0x%04x,0x%04x>\n",
+		if ((array[0] & ~DW1000_ANTD_MASK) ||
+		    (array[1] & ~DW1000_ANTD_MASK)) {
+			dev_err(dw->dev,
+				"invalid decawave,antd values <0x%04x,0x%04x>\n",
 				array[0], array[1]);
 			return 0;
 		}
-		dw->antd[DW1000_PRF_16M] = array[0];
-		dw->antd[DW1000_PRF_64M] = array[1];
+		cfg->antd[DW1000_PRF_16M] = array[0];
+		cfg->antd[DW1000_PRF_64M] = array[1];
 	}
 
 	dev_dbg(dw->dev, "set default antenna delays 0x%04x,0x%04x\n",
-		dw->antd[DW1000_PRF_16M], dw->antd[DW1000_PRF_64M]);
+		cfg->antd[DW1000_PRF_16M], cfg->antd[DW1000_PRF_64M]);
 	return 0;
 }
 
@@ -3387,19 +4105,19 @@ static int dw1000_load_delays(struct dw1000 *dw)
  */
 static int dw1000_load_sar(struct dw1000 *dw)
 {
-	int vmeas;
-	int tmeas;
+	int vcalib;
+	int tcalib;
 	int rc;
 
 	/* Read voltage measurement calibration from OTP */
-	if ((rc = regmap_read(dw->otp, DW1000_OTP_VMEAS, &vmeas)) != 0)
+	if ((rc = regmap_read(dw->otp, DW1000_OTP_VMEAS, &vcalib)) != 0)
 		return rc;
-	dw->vmeas_3v3 = DW1000_OTP_VMEAS_3V3(vmeas);
+	dw->vcalib_3v3 = DW1000_OTP_VMEAS_3V3(vcalib);
 
 	/* Read temperature measurement calibration from OTP */
-	if ((rc = regmap_read(dw->otp, DW1000_OTP_TMEAS, &tmeas)) != 0)
+	if ((rc = regmap_read(dw->otp, DW1000_OTP_TMEAS, &tcalib)) != 0)
 		return rc;
-	dw->tmeas_23c = DW1000_OTP_TMEAS_23C(tmeas);
+	dw->tcalib_23c = DW1000_OTP_TMEAS_23C(tcalib);
 
 	return 0;
 }
@@ -3509,7 +4227,8 @@ static int dw1000_load_profiles(struct dw1000 *dw)
 	of_node_put(node);
 
 	/* Default profile */
-	if (of_property_read_string(dw->dev->of_node, "decawave,default", &profile) == 0) {
+	if (of_property_read_string(dw->dev->of_node,
+				    "decawave,default", &profile) == 0) {
 		dw1000_configure_profile(dw,profile);
 	}
 
@@ -3517,15 +4236,14 @@ static int dw1000_load_profiles(struct dw1000 *dw)
 }
 
 /**
- * dw1000_init() - Apply initial configuration
+ * dw1000_hwinit() - Apply hardware configuration
  *
  * @dw:			DW1000 device
  * @return:		0 on success or -errno
  */
-static int dw1000_init(struct dw1000 *dw)
+static int dw1000_hwinit(struct dw1000 *dw)
 {
 	int modelverrev;
-	int sys_cfg_filters;
 	int mask;
 	int value;
 	int rc;
@@ -3541,20 +4259,16 @@ static int dw1000_init(struct dw1000 *dw)
 
 	/* Set system configuration:
 	 *
-	 * - enable all frame types (when filtering is enabled)
+	 * - frame filter disabled
 	 * - use double buffering
 	 * - use receiver auto-re-enabling
 	 *
 	 * Note that the overall use of filtering is controlled via
 	 * dw1000_set_promiscuous_mode().
 	 */
-	sys_cfg_filters = (DW1000_SYS_CFG_FFAB | DW1000_SYS_CFG_FFAD |
-			   DW1000_SYS_CFG_FFAA | DW1000_SYS_CFG_FFAM |
-			   DW1000_SYS_CFG_FFAR | DW1000_SYS_CFG_FFA4 |
-			   DW1000_SYS_CFG_FFA5);
-	mask = (sys_cfg_filters | DW1000_SYS_CFG_DIS_DRXB |
+	mask = (DW1000_SYS_CFG_FFA | DW1000_SYS_CFG_DIS_DRXB |
 		DW1000_SYS_CFG_RXAUTR);
-	value = (sys_cfg_filters | DW1000_SYS_CFG_RXAUTR);
+	value = (DW1000_SYS_CFG_RXAUTR);
 	if ((rc = regmap_update_bits(dw->sys_cfg.regs, 0, mask, value)) != 0)
 		return rc;
 
@@ -3574,7 +4288,7 @@ static int dw1000_init(struct dw1000 *dw)
 	if ((rc = regmap_update_bits(dw->pmsc.regs, DW1000_PMSC_CTRL0,
 				     mask, value)) != 0)
 		return rc;
-
+	
 #ifdef DW1000_GPIO_LEDS
 	/* Configure GPIOs as LED outputs */
 	mask = (DW1000_GPIO_MODE_MSGP0_MASK | DW1000_GPIO_MODE_MSGP1_MASK |
@@ -3606,40 +4320,11 @@ static int dw1000_init(struct dw1000 *dw)
 				     mask, value)) != 0)
 		return rc;
 
-	/* Load XTALT calibration value */
-	if ((rc = dw1000_load_xtalt(dw)) != 0)
-		return rc;
-
-	/* Load LDOTUNE calibration value */
-	if ((rc = dw1000_load_ldotune(dw)) != 0)
-		return rc;
-
-	/* Load SAR ADC calibration values */
-	if ((rc = dw1000_load_sar(dw)) != 0)
-		return rc;
-
-	/* Load EUI-64 address */
-	if ((rc = dw1000_load_eui64(dw)) != 0)
-		return rc;
-
-	/* Load default antenna delays */
-	if ((rc = dw1000_load_delays(dw)) != 0)
-		return rc;
-
-	/* Load profile calibration values */
-	if ((rc = dw1000_load_profiles(dw)) != 0)
-		return rc;
-
-	/* Load LDE microcode */
-	if ((rc = dw1000_load_lde(dw)) != 0)
-		return rc;
-
-	/* Configure radio */
-	if ((rc = dw1000_reconfigure(dw, -1U)) != 0)
-		return rc;
-
-	/* Initialise PTP clock */
-	if ((rc = dw1000_ptp_init(dw)) != 0)
+	/* Enable clock PLL detection flags */
+	mask = DW1000_EC_CTRL_PLLLDT;
+	value = DW1000_EC_CTRL_PLLLDT;
+	if ((rc = regmap_update_bits(dw->ext_sync.regs, DW1000_EC_CTRL,
+				     mask, value)) != 0)
 		return rc;
 
 	/* Force TX and RX clocks to stay enabled at all times.  This
@@ -3657,25 +4342,552 @@ static int dw1000_init(struct dw1000 *dw)
 
 	/* Clear startup status bits */
 	if ((rc = regmap_write(dw->sys_status.regs, 0,
-			       (DW1000_SYS_STATUS_CPLOCK |
-				DW1000_SYS_STATUS_SLP2INIT |
-				DW1000_SYS_STATUS_RFPLL_LL |
-				DW1000_SYS_STATUS_CLKPLL_LL))) != 0)
+			       DW1000_SYS_STATUS_RESET)) != 0)
 		return rc;
 
+	return 0;
+
+}
+
+/**
+ * dw1000_init() - Initialise device
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_init(struct dw1000 *dw)
+{
+	struct dw1000_config *cfg = &dw->cfg;
+	int rc;
+	
+	/* All config items pending */
+	cfg->pending = ~0;
+
+	/* Start device */
+	if ((rc = dw1000_reset(dw)) != 0)
+		goto error;
+	if ((rc = dw1000_hwinit(dw)) != 0)
+		goto error;
+	if ((rc = dw1000_load_lde(dw)) != 0)
+		goto error;
+	if ((rc = dw1000_load_config(dw)) != 0)
+		goto error;
+	if ((rc = dw1000_ptp_reset(dw)) != 0)
+		goto error;
+	
+	dw1000_set_state(dw, DW1000_STATE_IDLE);
+	return 0;
+
+ error:
+	dw1000_disable(dw);
+	dw1000_poweroff(dw);
+	dw1000_set_state(dw, DW1000_STATE_DEAD);
+ 	return rc;
+}
+
+/**
+ * dw1000_remove() - Remove device
+ *
+ * @dw:			DW1000 device
+ */
+static void dw1000_remove(struct dw1000 *dw)
+{
+	/* Stop device */
+	dw1000_disable(dw);
+	dw1000_poweroff(dw);
+	dw1000_set_state(dw, DW1000_STATE_OFF);
+}
+
+/**
+ * dw1000_reload() - Reset & reload device
+ *
+ * @dw:			DW1000 device
+ */
+static void dw1000_reload(struct dw1000 *dw)
+{
+	struct dw1000_state *stm = &dw->stm;
+	
+	/* Power down */
+	dw1000_remove(dw);
+
+	/* Number of hard resets */
+	dw1000_stats_inc(dw, DW1000_STATS_HARD_RESET);
+
+	/* Limit recovery attempts */
+	if (stm->recovery_count++ < DW1000_MAX_RECOVERY) {
+		dw1000_set_state(dw, DW1000_STATE_OFF);
+		dw1000_enqueue(dw, DW1000_INIT_WORK);
+	} else {
+		dw1000_set_state(dw, DW1000_STATE_DEAD);
+	}
+}
+
+/**
+ * dw1000_game_over() - Device failure
+ *
+ * @dw:			DW1000 device
+ */
+static void dw1000_game_over(struct dw1000 *dw)
+{
+	/* Kill device */
+	dw1000_disable(dw);
+	dw1000_poweroff(dw);
+	dw1000_set_state(dw, DW1000_STATE_DEAD);
+
+	dev_err(dw->dev, "GAME OVER\n");
+}
+
+
+/******************************************************************************
+ *
+ * State Machine
+ *
+ */
+
+/**
+ * dw1000_state_init() - Prepare state machine
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_state_init(struct dw1000 *dw)
+{
+	struct dw1000_state *stm = &dw->stm;
+	struct sched_param sched_par = {
+		.sched_priority = MAX_RT_PRIO - 2
+	};
+	
+	/* Clear memory */
+	memset(stm,0,sizeof(*stm));
+
+	/* Wait queues */
+	init_waitqueue_head(&stm->work_wq);
+
+	/* Setup timer for state timeout */
+	timer_setup(&stm->state_timer, dw1000_state_timer_handler, 0);
+	timer_setup(&stm->adc_timer, dw1000_adc_timer_handler, 0);
+
+	/* Setup background work */
+	INIT_DELAYED_WORK(&dw->stats.work, dw1000_stats_work);
+
+	/* Init event handler thread */
+	stm->mthread = kthread_create(dw1000_event_thread, dw,
+				      "%s", dev_name(dw->dev));
+	if (IS_ERR(stm->mthread)) {
+		return PTR_ERR(stm->mthread);
+	}
+	kthread_bind(stm->mthread, 0);
+	
+	/* Increase thread priority */
+        sched_setscheduler(stm->mthread, SCHED_FIFO, &sched_par);
+	
+	/* Default state */
+	stm->mstate = DW1000_STATE_OFF;
+	
 	return 0;
 }
 
 /**
- * dw1000_probe() - Create device
+ * dw1000_state_start() - Start state machine
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_state_start(struct dw1000 *dw)
+{
+	struct dw1000_state *stm = &dw->stm;
+
+	/* Start ADC timer */
+	mod_timer(&stm->adc_timer, jiffies +
+		  msecs_to_jiffies(DW1000_ADC_READ_DELAY));
+	
+	/* Initialisation work */
+	dw1000_enqueue(dw, DW1000_INIT_WORK);
+
+	/* Start state machine thread */
+	wake_up_process(stm->mthread);
+	
+	dev_dbg(dw->dev, "state machine started\n");
+	return 0;
+}
+
+/**
+ * dw1000_state_stop() - Sop state machine
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_state_stop(struct dw1000 *dw)
+{
+	struct dw1000_state *stm = &dw->stm;
+
+	/* Stop state machine thread */
+	kthread_stop(stm->mthread);
+
+	/* No IRQs after this point */
+	disable_irq(dw->spi->irq);
+	
+	/* Stop statistics work */
+	cancel_delayed_work_sync(&dw->stats.work);
+	
+	/* Delete timers */
+	del_timer_sync(&stm->state_timer);
+	del_timer_sync(&stm->adc_timer);
+	
+	dev_dbg(dw->dev, "state machine stopped\n");
+	return 0;
+}
+
+static __always_inline void
+dw1000_set_state(struct dw1000 *dw, unsigned state)
+{
+	dw1000_set_state_timeout(dw, state, DW1000_DEFAULT_TIMEOUT);
+}
+
+static __always_inline void
+dw1000_set_state_timeout(struct dw1000 *dw, unsigned state, unsigned us)
+{
+	struct dw1000_state *stm = &dw->stm;
+	
+	stm->mstate = state;
+	mod_timer(&stm->state_timer, jiffies + usecs_to_jiffies(us));
+}
+
+static void dw1000_enqueue(struct dw1000 *dw, unsigned long work)
+{
+	struct dw1000_state *stm = &dw->stm;
+	unsigned long flags;
+	
+	spin_lock_irqsave(&stm->work_wq.lock, flags);
+	stm->pending_work |= work;
+	wake_up_locked(&stm->work_wq);
+	spin_unlock_irqrestore(&stm->work_wq.lock, flags);
+}
+
+static void dw1000_enqueue_wait(struct dw1000 *dw, unsigned long work)
+{
+	struct dw1000_state *stm = &dw->stm;
+	unsigned long flags;
+	
+	spin_lock_irqsave(&stm->work_wq.lock, flags);
+	stm->pending_work |= work;
+	wake_up_locked(&stm->work_wq);
+	wait_event_interruptible_locked_irq(stm->work_wq,
+					    !(stm->pending_work & work));
+	spin_unlock_irqrestore(&stm->work_wq.lock, flags);
+}
+
+static void dw1000_dequeue(struct dw1000 *dw, unsigned long work)
+{
+	struct dw1000_state *stm = &dw->stm;
+	unsigned long flags;
+	
+	spin_lock_irqsave(&stm->work_wq.lock, flags);
+	stm->pending_work &= ~work;
+	wake_up_locked(&stm->work_wq);
+	spin_unlock_irqrestore(&stm->work_wq.lock, flags);
+}
+
+static void dw1000_enqueue_irq(struct dw1000 *dw)
+{
+	struct dw1000_state *stm = &dw->stm;
+	unsigned long flags;
+	
+	dw1000_stats_inc(dw, DW1000_STATS_IRQ_COUNT);
+	
+	spin_lock_irqsave(&stm->work_wq.lock, flags);
+	if (!(stm->pending_work & DW1000_IRQ_WORK)) {
+		stm->pending_work |= DW1000_IRQ_WORK;
+		disable_irq_nosync(dw->spi->irq);
+	}
+	wake_up_locked(&stm->work_wq);
+	spin_unlock_irqrestore(&stm->work_wq.lock, flags);
+}
+
+static void dw1000_wait_pending_work(struct dw1000 *dw)
+{
+	struct dw1000_state *stm = &dw->stm;
+	unsigned long flags;
+	
+	spin_lock_irqsave(&stm->work_wq.lock, flags);
+	if (stm->pending_work & DW1000_IRQ_WORK) {
+		stm->pending_work &= ~DW1000_IRQ_WORK;
+		enable_irq(dw->spi->irq);
+	}
+	wait_event_interruptible_locked_irq(stm->work_wq,
+					    stm->pending_work ||
+					    kthread_should_stop());
+	spin_unlock_irqrestore(&stm->work_wq.lock, flags);
+}
+
+static unsigned long dw1000_get_pending_work(struct dw1000 *dw)
+{
+	struct dw1000_state *stm = &dw->stm;
+	unsigned long work;
+	unsigned long flags;
+	
+	spin_lock_irqsave(&stm->work_wq.lock, flags);
+	work = stm->pending_work;
+	spin_unlock_irqrestore(&stm->work_wq.lock, flags);
+
+	return work;
+}
+
+static int dw1000_event_thread(void *data)
+{
+	struct dw1000 *dw = data;
+	struct dw1000_state *stm = &dw->stm;
+	unsigned long pending_work = 0;
+	unsigned sys_status = 0;
+	int rc;
+
+	/* State is now OFF */
+	dw1000_set_state(dw, DW1000_STATE_OFF);
+
+	/* Run until stopped */
+	while (!kthread_should_stop()) {
+ again:
+		/* Read status if applicable */
+		switch (stm->mstate)
+		{
+		    case DW1000_STATE_IDLE:
+		    case DW1000_STATE_RX:
+		    case DW1000_STATE_TX:
+			/* Read system status */
+			if ((rc = regmap_read(dw->sys_status.regs,
+					      0, &sys_status)) != 0) {
+				dw1000_stats_inc(dw, DW1000_STATS_SPI_ERROR);
+				dw1000_enqueue(dw, DW1000_ERROR_WORK);
+				goto again_nospi;
+			}
+			break;
+		    default:
+			sys_status = 0;
+			break;
+		}
+
+		INJECT_ERROR(dw, STATE_SYS_STATUS, sys_status);
+
+		/* State independent errors */
+		if (sys_status & DW1000_SYS_STATUS_ERROR) {
+			if (sys_status & DW1000_SYS_STATUS_RFPLL_LL)
+				dev_err(dw->dev, "RFPLL sync lost\n");
+			if (sys_status & DW1000_SYS_STATUS_CLKPLL_LL)
+				dev_err(dw->dev, "CLKPLL sync lost\n");
+			dw1000_game_over(dw);
+			goto again_nospi;
+		}
+		
+ again_nospi:
+		/* Pending work items */
+		pending_work = dw1000_get_pending_work(dw);
+
+		/* SPI/HW errors */
+		if (pending_work & DW1000_ERROR_WORK) {
+			dev_err(dw->dev, "error detected; resetting\n");
+			dw1000_reload(dw);
+			dw1000_dequeue(dw, DW1000_ERROR_WORK);
+			goto again_nospi;
+		}
+
+		INJECT_ERROR(dw, STATE_DELAY);
+
+		/* State dependent handling */
+		switch (stm->mstate) {
+		case DW1000_STATE_OFF:
+			/* Handle pending work */
+			if (pending_work) {
+				/* Remove reguested */
+				if (pending_work & DW1000_KILL_WORK) {
+					dw1000_dequeue(dw, DW1000_KILL_WORK);
+					goto again_nospi;
+				}
+				/* Init reguested */
+				if (pending_work & DW1000_INIT_WORK) {
+					dw1000_poweron(dw);
+					dw1000_init(dw);
+					dw1000_dequeue(dw, DW1000_INIT_WORK);
+					goto again;
+				}
+			}
+			break;
+			
+		case DW1000_STATE_IDLE:
+			/* Handle pending work */
+			if (pending_work) {
+				/* Remove reguested */
+				if (pending_work & DW1000_KILL_WORK) {
+					dw1000_remove(dw);
+					dw1000_dequeue(dw, DW1000_KILL_WORK);
+					goto again;
+				}
+				/* Reconfigure reguested */
+				if (pending_work & DW1000_CONFIG_WORK) {
+					dw1000_load_config(dw);
+					dw1000_dequeue(dw, DW1000_CONFIG_WORK);
+					goto again;
+				}
+				/* PTP work */
+				if (pending_work & DW1000_PTP_WORK) {
+					dw1000_ptp_sync(dw);
+					dw1000_dequeue(dw, DW1000_PTP_WORK);
+					goto again;
+				}
+				/* ADC work */
+				if (pending_work & DW1000_ADC_WORK) {
+					dw1000_sar_read(dw);
+					dw1000_dequeue(dw, DW1000_ADC_WORK);
+					goto again;
+				}
+				/* Timer expired */
+				if (pending_work & DW1000_TIMER_WORK) {
+					dw1000_set_state(dw, DW1000_STATE_IDLE);
+					dw1000_dequeue(dw, DW1000_TIMER_WORK);
+					goto again_nospi;
+				}
+				/* Stack work */
+				if (pending_work & DW1000_STACK_WORK) {
+					dw1000_dequeue(dw, DW1000_STACK_WORK);
+					goto again_nospi;
+				}
+			}
+			
+			/* ieee802154 stack enabled */
+			if (stm->ieee802154_enabled == true) {
+				dw1000_enable(dw);
+				goto again;
+			}
+			break;
+			
+		case DW1000_STATE_RX:
+			/* Handle receiver activity */
+			if (sys_status & DW1000_SYS_STATUS_RXOVRR) {
+				dw1000_stats_inc(dw, DW1000_STATS_RX_OVRR);
+				dw1000_rx_recover(dw);
+				goto again;
+			}
+			if (sys_status & DW1000_SYS_STATUS_RXDFR) {
+				dw1000_rx_frame(dw);
+				goto again;
+			}
+			
+			/* Handle pending work */
+			if (pending_work) {
+				/* Remove reguested */
+				if (pending_work & DW1000_KILL_WORK) {
+					dw1000_remove(dw);
+					dw1000_dequeue(dw, DW1000_KILL_WORK);
+					goto again;
+				}
+				/* Reconfigure requested */
+				if (pending_work & DW1000_CONFIG_WORK) {
+					dw1000_disable(dw);
+					/* Continue in IDLE state */
+					goto again;
+				}
+				/* TX requested */
+				if (pending_work & DW1000_TX_WORK) {
+					dw1000_tx_frame_start(dw);
+					dw1000_dequeue(dw, DW1000_TX_WORK);
+					goto again;
+				}
+				/* PTP work */
+				if (pending_work & DW1000_PTP_WORK) {
+					dw1000_ptp_sync(dw);
+					dw1000_dequeue(dw, DW1000_PTP_WORK);
+					goto again;
+				}
+				/* ADC work */
+				if (pending_work & DW1000_ADC_WORK) {
+					dw1000_disable(dw);
+					/* Continue in IDLE state */
+					goto again;
+				}
+				/* Timer expired */
+				if (pending_work & DW1000_TIMER_WORK) {
+					dw1000_set_state(dw, DW1000_STATE_RX);
+					dw1000_dequeue(dw, DW1000_TIMER_WORK);
+					goto again_nospi;
+				}
+				/* Stack work */
+				if (pending_work & DW1000_STACK_WORK) {
+					dw1000_dequeue(dw, DW1000_STACK_WORK);
+					goto again_nospi;
+				}
+			}
+			
+			/* ieee802154 stack disabled */
+			if (stm->ieee802154_enabled == false) {
+				dw1000_disable(dw);
+				goto again;
+			}
+			break;
+			
+		case DW1000_STATE_TX:
+			/* Handle IRQ activity */
+			if (sys_status & DW1000_SYS_STATUS_TXFRS) {
+				dw1000_tx_frame_sent(dw);
+				goto again;
+			}
+			
+			/* Handle pending work */
+			if (pending_work) {
+				/* Timer expired */
+				if (pending_work & DW1000_TIMER_WORK) {
+					dw1000_tx_error(dw);
+					dw1000_dequeue(dw, DW1000_TIMER_WORK);
+					goto again;
+				}
+			}
+			break;
+			
+		case DW1000_STATE_DEAD:
+			/* Ignore all work */
+			if (pending_work) {
+				dw1000_dequeue(dw, pending_work);
+				goto again_nospi;
+			}
+			break;
+			
+		default:
+			/* Should not be here */
+			dev_err(dw->dev,
+				"Internal error: state mismatch (%d)\n",
+				stm->mstate);
+			dw1000_game_over(dw);
+			break;
+		}
+		
+		/* Wait for more work */
+		dw1000_wait_pending_work(dw);
+	}
+
+	/* Make sure device is off */
+	dw1000_remove(dw);
+	
+	dev_dbg(dw->dev, "thread finished\n");
+	return 0;
+}
+
+
+/******************************************************************************
+ *
+ * Device probe
+ *
+ */
+
+/**
+ * dw1000_spi_probe() - Probe device on SPI
  *
  * @spi:		SPI device
  * @return:		0 on success or -errno
  */
-static int dw1000_probe(struct spi_device *spi)
+static int dw1000_spi_probe(struct spi_device *spi)
 {
 	struct ieee802154_hw *hw;
 	struct dw1000 *dw;
+	struct dw1000_config *cfg;
+	int irqf;
 	int rc;
 
 	/* Allocate IEEE 802.15.4 device */
@@ -3684,44 +4896,31 @@ static int dw1000_probe(struct spi_device *spi)
 		rc = -ENOMEM;
 		goto err_alloc_hw;
 	}
+	hw->parent = &spi->dev;
+	spi_set_drvdata(spi, hw);
+
 	dw = hw->priv;
+	dw->hw = hw;
 	dw->spi = spi;
 	dw->dev = &spi->dev;
-	dw->hw = hw;
-	dw->phy = hw->phy;
-	dw->xtalt = DW1000_FS_XTALT_XTALT_MIDPOINT;
-	dw->channel = DW1000_CHANNEL_DEFAULT;
-	dw->prf = DW1000_PRF_64M;
-	dw->rate = DW1000_RATE_6800K;
-	dw->txpsr = DW1000_TXPSR_DEFAULT;
-	dw->smart_power = true;
+
+	dev_dbg(dw->dev, "Loading driver\n");
+	
+	/* Radio configuration */
+	cfg = &dw->cfg;
+	cfg->xtalt = DW1000_FS_XTALT_XTALT_MIDPOINT;
+	cfg->channel = DW1000_CHANNEL_DEFAULT;
+	cfg->prf = DW1000_PRF_64M;
+	cfg->rate = DW1000_RATE_6800K;
+	cfg->txpsr = DW1000_TXPSR_DEFAULT;
+	cfg->smart_power = true;
+	cfg->frame_filter = DW1000_SYS_CFG_FFA;
+	mutex_init(&cfg->mutex);
+
+	/* Timestamp quality thresholds */
 	dw->snr_threshold = DW1000_SNR_THRESHOLD_DEFAULT;
 	dw->fpr_threshold = DW1000_FPR_THRESHOLD_DEFAULT;
 	dw->noise_threshold = DW1000_NOISE_THRESHOLD_DEFAULT;
-	spin_lock_init(&dw->tx_lock);
-	INIT_DELAYED_WORK(&dw->ptp_work, dw1000_ptp_worker);
-	hw->parent = &spi->dev;
-
-	/* Initialise reset GPIO pin as output */
-	dw->reset_gpio = of_get_named_gpio(dw->dev->of_node, "reset-gpio", 0);
-	if (gpio_is_valid(dw->reset_gpio)) {
-		if ((rc = gpio_request_one(dw->reset_gpio, GPIOF_DIR_OUT |
-					   GPIOF_OPEN_DRAIN | GPIOF_INIT_LOW,
-					   "dw1000-reset")) < 0)
-			goto err_req_reset_gpio;
-	} else {
-		dev_warn(dw->dev, "device does not support GPIO RESET control");
-	}
-
-	/* Initialise power GPIO pin as output */
-	dw->power_gpio = of_get_named_gpio(dw->dev->of_node, "power-gpio", 0);
-	if (gpio_is_valid(dw->power_gpio)) {
-		if ((rc = gpio_request_one(dw->power_gpio, GPIOF_DIR_OUT |
-					   GPIOF_INIT_LOW, "dw1000-power")) < 0)
-			goto err_req_power_gpio;
-	} else {
-		dev_warn(dw->dev, "device does not support GPIO POWER control");
-	}
 
 	/* Report capabilities */
 	hw->flags = (IEEE802154_HW_TX_OMIT_CKSUM |
@@ -3732,53 +4931,114 @@ static int dw1000_probe(struct spi_device *spi)
 	hw->phy->current_page = DW1000_CHANNEL_PAGE;
 	hw->phy->current_channel = DW1000_CHANNEL_DEFAULT;
 
+	/* Initialise reset GPIO pin as output */
+	dw->reset_gpio = of_get_named_gpio(dw->dev->of_node, "reset-gpio", 0);
+	if (gpio_is_valid(dw->reset_gpio)) {
+		if ((rc = devm_gpio_request_one(dw->dev, dw->reset_gpio,
+						GPIOF_DIR_OUT |
+						GPIOF_OPEN_DRAIN |
+						GPIOF_INIT_LOW,
+						"dw1000-reset")) < 0)
+			goto err_req_reset_gpio;
+	} else {
+		dev_warn(dw->dev, "device does not support GPIO RESET control");
+	}
+
+	/* Initialise power GPIO pin as output */
+	dw->power_gpio = of_get_named_gpio(dw->dev->of_node, "power-gpio", 0);
+	if (gpio_is_valid(dw->power_gpio)) {
+		if ((rc = devm_gpio_request_one(dw->dev, dw->power_gpio,
+						GPIOF_DIR_OUT |
+						GPIOF_INIT_LOW,
+						"dw1000-power")) < 0)
+			goto err_req_power_gpio;
+	} else {
+		dev_warn(dw->dev, "device does not support GPIO POWER control");
+	}
+
+	/* Hook interrupt */
+	irqf = irq_get_trigger_type(spi->irq);
+        if (!irqf)
+                irqf = IRQF_TRIGGER_HIGH;
+	if ((rc = devm_request_irq(dw->dev, spi->irq, dw1000_irq_handler,
+				   irqf, dev_name(dw->dev), dw)) != 0) {
+		dev_err(dw->dev, "could not request IRQ %d: %d\n", spi->irq, rc);
+		goto err_request_irq;
+	}
+
 	/* Initialise register maps */
 	if ((rc = dw1000_regmap_init(dw)) != 0)
 		goto err_regmap_init;
 	if ((rc = dw1000_otp_regmap_init(dw)) != 0)
 		goto err_otp_regmap_init;
 
-	/* Reset device */
+	/* Initialise state descriptor */
+	if ((rc = dw1000_state_init(dw)) != 0) {
+		dev_err(dw->dev, "STATE initialisation failed: %d\n", rc);
+		goto err_state_init;
+	}
+	/* Initialise sarc descriptor */
+	if ((rc = dw1000_sar_init(dw)) != 0) {
+		dev_err(dw->dev, "SAR initialisation failed: %d\n", rc);
+		goto err_sar_init;
+	}
+	/* Initialise transmit descriptor */
+	if ((rc = dw1000_tx_init(dw)) != 0) {
+		dev_err(dw->dev, "TX initialisation failed: %d\n", rc);
+		goto err_tx_init;
+	}
+	/* Initialise receive descriptor */
+	if ((rc = dw1000_rx_init(dw)) != 0) {
+		dev_err(dw->dev, "RX initialisation failed: %d\n", rc);
+		goto err_rx_init;
+	}
+
+	/* Turn on power */
+	if ((rc = dw1000_poweron(dw)) != 0) {
+		dev_err(dw->dev, "Device power on failed: %d\n", rc);
+		goto err_power;
+	}
+	/* Soft reset */
 	if ((rc = dw1000_reset(dw)) != 0) {
-		dev_err(dw->dev, "reset failed: %d\n", rc);
+		dev_err(dw->dev, "Device reset failed: %d\n", rc);
 		goto err_reset;
 	}
-
-	/* Initialise device */
-	if ((rc = dw1000_init(dw)) != 0) {
-		dev_err(dw->dev, "initialisation failed: %d\n", rc);
-		goto err_init;
+	
+	/* Load OTP and DT */
+	if ((rc = dw1000_load_xtalt(dw)) != 0) {
+		dev_err(dw->dev, "Load OTP/DT XTALT failed: %d\n", rc);
+		goto err_load_otp;
 	}
-
-	/* Add attribute group */
-	if ((rc = sysfs_create_group(&dw->dev->kobj, &dw1000_attr_group)) != 0){
-		dev_err(dw->dev, "could not create sysfs attributes: %d\n", rc);
-		goto err_create_group;
+	if ((rc = dw1000_load_ldotune(dw)) != 0) {
+		dev_err(dw->dev, "Load OTP/DT LDOTUNE failed: %d\n", rc);
+		goto err_load_otp;
 	}
-
-	/* Hook interrupt */
-	if ((rc = devm_request_threaded_irq(dw->dev, spi->irq, NULL,
-					    dw1000_isr_thread,
-					    IRQF_NO_SUSPEND | IRQF_ONESHOT,
-					    dev_name(dw->dev), dw)) != 0) {
-		dev_err(dw->dev, "could not request IRQ %d: %d\n",
-			spi->irq, rc);
-		goto err_request_irq;
+	if ((rc = dw1000_load_sar(dw)) != 0) {
+		dev_err(dw->dev, "Load OTP/DT SAR failed: %d\n", rc);
+		goto err_load_otp;
 	}
-
-	/* Start timer wraparound check worker */
-	schedule_delayed_work(&dw->ptp_work, DW1000_PTP_WORK_DELAY);
-
+	if ((rc = dw1000_load_eui64(dw)) != 0) {
+		dev_err(dw->dev, "Load OTP/DT EUI64 failed: %d\n", rc);
+		goto err_load_otp;
+	}
+	if ((rc = dw1000_load_delays(dw)) != 0) {
+		dev_err(dw->dev, "Load OTP/DT delays failed: %d\n", rc);
+		goto err_load_otp;
+	}
+	if ((rc = dw1000_load_profiles(dw)) != 0) {
+		dev_err(dw->dev, "Load OTP/DT profiles failed: %d\n", rc);
+		goto err_load_otp;
+	}
+	
 	/* Register PTP clock */
-	dw->ptp.clock = ptp_clock_register(&dw->ptp.info, dw->dev);
-	if (IS_ERR(dw->ptp.clock)) {
-		rc = PTR_ERR(dw->ptp.clock);
-		dev_err(dw->dev, "could not register PTP clock: %d\n", rc);
-		goto err_register_ptp;
+	if ((rc = dw1000_ptp_init(dw)) != 0) {
+		dev_err(dw->dev, "could not register ptp clock: %d\n", rc);
+		goto err_ptp_init;
 	}
-
+	
 	/* Register hardware monitor */
-	dw->hwmon = devm_hwmon_device_register_with_info(dw->dev, "dw1000", dw,
+	dw->hwmon = devm_hwmon_device_register_with_info(dw->dev,
+							 "dw1000", dw,
 							 &dw1000_hwmon_chip,
 							 NULL);
 	if (IS_ERR(dw->hwmon)) {
@@ -3787,33 +5047,48 @@ static int dw1000_probe(struct spi_device *spi)
 		goto err_register_hwmon;
 	}
 
+	/* Add attribute groups */
+	if ((rc = sysfs_create_group(&dw->dev->kobj,
+				     &dw1000_attr_group)) != 0) {
+		dev_err(dw->dev, "could not create sysfs attributes: %d\n", rc);
+		goto err_create_group;
+	}
+	if ((rc = sysfs_merge_group(&dw->dev->kobj,
+				    &dw1000_stats_attr_group)) != 0) {
+		dev_err(dw->dev, "could not merge sysfs attributes: %d\n", rc);
+		goto err_merge_stats_group;
+	}
+
 	/* Register IEEE 802.15.4 device */
 	if ((rc = ieee802154_register_hw(hw)) != 0) {
-		dev_err(dw->dev, "could not register IEEE 802.15.4 device: %d\n", rc);
+		dev_err(dw->dev,
+			"could not register IEEE 802.15.4 device: %d\n", rc);
 		goto err_register_hw;
 	}
 
-	spi_set_drvdata(spi, hw);
+	/* Start state machine */
+	dw1000_state_start(dw);
+	
 	return 0;
 
-	ieee802154_unregister_hw(hw);
  err_register_hw:
- err_register_hwmon:
-	ptp_clock_unregister(dw->ptp.clock);
- err_register_ptp:
-	cancel_delayed_work_sync(&dw->ptp_work);
- err_request_irq:
+	sysfs_unmerge_group(&dw->dev->kobj, &dw1000_stats_attr_group);
+ err_merge_stats_group:
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
  err_create_group:
- err_init:
+ err_register_hwmon:
+ err_ptp_init:
+ err_load_otp:
  err_reset:
+ err_power:
+ err_rx_init:
+ err_tx_init:
+ err_sar_init:
+ err_state_init:
  err_otp_regmap_init:
  err_regmap_init:
-	if (gpio_is_valid(dw->reset_gpio))
-		gpio_free(dw->reset_gpio);
+ err_request_irq:
  err_req_power_gpio:
-	if (gpio_is_valid(dw->power_gpio))
-		gpio_free(dw->power_gpio);
  err_req_reset_gpio:
 	ieee802154_free_hw(hw);
  err_alloc_hw:
@@ -3821,26 +5096,26 @@ static int dw1000_probe(struct spi_device *spi)
 }
 
 /**
- * dw1000_remove() - Remove device
+ * dw1000_spi_remove() - Remove SPI device
  *
  * @spi:		SPI device
  * @return:		0 on success or -errno
  */
-static int dw1000_remove(struct spi_device *spi)
+static int dw1000_spi_remove(struct spi_device *spi)
 {
 	struct ieee802154_hw *hw = spi_get_drvdata(spi);
 	struct dw1000 *dw = hw->priv;
 
-	ieee802154_unregister_hw(hw);
-	ptp_clock_unregister(dw->ptp.clock);
-	cancel_delayed_work_sync(&dw->ptp_work);
+	/* Remove sysfs nodes */
+	sysfs_unmerge_group(&dw->dev->kobj, &dw1000_stats_attr_group);
 	sysfs_remove_group(&dw->dev->kobj, &dw1000_attr_group);
-	dw1000_reset(dw);
+	
+	/* Unregister subsystems */
+	ieee802154_unregister_hw(hw);
+	dw1000_ptp_remove(dw);
+	dw1000_state_stop(dw);
 	ieee802154_free_hw(hw);
-	if (gpio_is_valid(dw->reset_gpio))
-		gpio_free(dw->reset_gpio);
-	if (gpio_is_valid(dw->power_gpio))
-		gpio_free(dw->power_gpio);
+	
 	return 0;
 }
 
@@ -3872,11 +5147,12 @@ static struct spi_driver dw1000_driver = {
 		.of_match_table = of_match_ptr(dw1000_of_ids),
 	},
 	.id_table = dw1000_spi_ids,
-	.probe = dw1000_probe,
-	.remove = dw1000_remove,
+	.probe = dw1000_spi_probe,
+	.remove = dw1000_spi_remove,
 };
 module_spi_driver(dw1000_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Michael Brown <mbrown@fensystems.co.uk>");
+MODULE_AUTHOR("Petri Mattila <petri.mattila@unipart.io>");
 MODULE_DESCRIPTION("DecaWave DW1000 IEEE 802.15.4 driver");
