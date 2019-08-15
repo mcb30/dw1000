@@ -3466,7 +3466,7 @@ static int dw1000_load_profiles(struct dw1000 *dw)
 	int pid = 0;
 
 	/* Find the calibration node */
-	node = of_find_node_by_name(dw->dev->of_node, "decawave,calib");
+	node = of_get_child_by_name(dw->dev->of_node, "decawave,calib");
 	if (!node) {
 		dev_dbg(dw->dev, "no calibration sets in device tree\n");
 		return 0;
