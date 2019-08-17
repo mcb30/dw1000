@@ -1,9 +1,9 @@
 (kicad_pcb (version 4) (host pcbnew 4.0.7-e2-6376~61~ubuntu18.04.1)
 
   (general
-    (links 444)
+    (links 448)
     (no_connects 0)
-    (area 72.339999 72.339999 137.440001 128.940001)
+    (area 61.968572 61.69 156.811429 138.435001)
     (thickness 1.6)
     (drawings 44)
     (tracks 656)
@@ -37,7 +37,7 @@
   )
 
   (setup
-    (last_trace_width 0.2032)
+    (last_trace_width 0.25)
     (user_trace_width 0.2032)
     (user_trace_width 0.4064)
     (user_trace_width 0.8)
@@ -1991,11 +1991,10 @@
       (net 1 GND) (zone_connect 2))
   )
 
-  (module pihat:Samtec_HLE-120-02-XXX-DV-BE-XX-XX locked (layer F.Cu) (tedit 5A6786F5) (tstamp 5D52D243)
+  (module pihat:Samtec_HLE-120-02-XXX-DV-BE-XX-XX locked (layer F.Cu) (tedit 5D580CD9) (tstamp 5D52D243)
     (at 104.89 76.39 90)
     (path /59FF759C)
-    (attr smd)
-    (fp_text reference J0 (at -4.255 -26.15 180) (layer F.SilkS)
+    (fp_text reference J2 (at -4.255 -26.15 180) (layer F.SilkS)
       (effects (font (size 1 1) (thickness 0.15)))
     )
     (fp_text value Raspberry_Pi_2_3 (at 5.08 0 360) (layer F.Fab)
@@ -5365,6 +5364,7 @@
   (module pitail:Samtec_HLE-120-02-XXX-DV-BE-XX-XX_Mirrored locked (layer B.Cu) (tedit 55198B5B) (tstamp 5D5295A5)
     (at 104.89 76.39 270)
     (path /59FF759C)
+    (attr smd)
     (fp_text reference J0 (at 4.31 26.19 360) (layer B.SilkS)
       (effects (font (size 1 1) (thickness 0.15)) (justify mirror))
     )
