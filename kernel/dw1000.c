@@ -3506,6 +3506,7 @@ static int dw1000_load_profiles(struct dw1000 *dw)
 		dev_warn(dw->dev, "failure reading \"%s\"\n", np->full_name);
 	}
 
+	of_node_put(np);
 	of_node_put(node);
 
 	/* Default profile */
