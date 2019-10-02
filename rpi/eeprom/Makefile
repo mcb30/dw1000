@@ -27,7 +27,7 @@ program :
 %.dtso : %.dtbo
 	$(DTC) -@ -I dtb -O dts -o $@ $<
 
-%.dtbo : pitail.dts Makefile
+%.dtbo : %.dts Makefile
 	$(CPP) -nostdinc -undef -x assembler-with-cpp \
 		-DEUI64=0x$(firstword $(EUI64) $*)  -DSPIMAX=$(SPIMAX) \
 		-DXTALT=$(XTALT) -DANTD16=$(ANTD16) -DANTD64=$(ANTD64) \
