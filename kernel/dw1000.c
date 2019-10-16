@@ -3112,7 +3112,7 @@ static ssize_t dw1000_store_profile(struct device *dev,
 		name[i] = buf[i];
 	name[i] = 0;
 
-	if ((rc = dw1000_configure_profile(dw, name)) != 0)
+	if ((rc = dw1000_configure_profile(dw, name)) < 0)
 		return rc;
 	return count;
 }
@@ -3134,9 +3134,9 @@ static ssize_t dw1000_store_xtalt(struct device *dev,
 	unsigned int trim;
 	int rc;
 
-	if ((rc = kstrtouint(buf, 0, &trim)) != 0)
+	if ((rc = kstrtouint(buf, 0, &trim)) < 0)
 		return rc;
-	if ((rc = dw1000_configure_xtalt(dw, trim)) != 0)
+	if ((rc = dw1000_configure_xtalt(dw, trim)) < 0)
 		return rc;
 	return count;
 }
@@ -3158,9 +3158,9 @@ static ssize_t dw1000_store_channel(struct device *dev,
 	int channel;
 	int rc;
 
-	if ((rc = kstrtoint(buf, 0, &channel)) != 0)
+	if ((rc = kstrtoint(buf, 0, &channel)) < 0)
 		return rc;
-	if ((rc = dw1000_configure_channel(dw, channel)) != 0)
+	if ((rc = dw1000_configure_channel(dw, channel)) < 0)
 		return rc;
 	return count;
 }
@@ -3182,9 +3182,9 @@ static ssize_t dw1000_store_pcode(struct device *dev,
 	int pcode;
 	int rc;
 
-	if ((rc = kstrtoint(buf, 0, &pcode)) != 0)
+	if ((rc = kstrtoint(buf, 0, &pcode)) < 0)
 		return rc;
-	if ((rc = dw1000_configure_pcode(dw, pcode)) != 0)
+	if ((rc = dw1000_configure_pcode(dw, pcode)) < 0)
 		return rc;
 	return count;
 }
@@ -3207,11 +3207,11 @@ static ssize_t dw1000_store_prf(struct device *dev,
 	int prf;
 	int rc;
 
-	if ((rc = kstrtoint(buf, 0, &raw)) != 0)
+	if ((rc = kstrtoint(buf, 0, &raw)) < 0)
 		return rc;
 	if ((prf = dw1000_lookup_prf(raw)) < 0)
 		return prf;
-	if ((rc = dw1000_configure_prf(dw, prf)) != 0)
+	if ((rc = dw1000_configure_prf(dw, prf)) < 0)
 		return rc;
 	return count;
 }
@@ -3233,9 +3233,9 @@ static ssize_t dw1000_store_antd(struct device *dev,
 	unsigned int delay;
 	int rc;
 
-	if ((rc = kstrtouint(buf, 0, &delay)) != 0)
+	if ((rc = kstrtouint(buf, 0, &delay)) < 0)
 		return rc;
-	if ((rc = dw1000_configure_antd(dw, delay)) != 0)
+	if ((rc = dw1000_configure_antd(dw, delay)) < 0)
 		return rc;
 	return count;
 }
@@ -3257,11 +3257,11 @@ static ssize_t dw1000_store_rate(struct device *dev,
 	int raw, rate;
 	int rc;
 
-	if ((rc = kstrtoint(buf, 0, &raw)) != 0)
+	if ((rc = kstrtoint(buf, 0, &raw)) < 0)
 		return rc;
 	if ((rate = dw1000_lookup_rate(raw)) < 0)
 		return rate;
-	if ((rc = dw1000_configure_rate(dw, rate)) != 0)
+	if ((rc = dw1000_configure_rate(dw, rate)) < 0)
 		return rc;
 	return count;
 }
@@ -3285,11 +3285,11 @@ static ssize_t dw1000_store_txpsr(struct device *dev,
 	int txpsr;
 	int rc;
 
-	if ((rc = kstrtoint(buf, 0, &raw)) != 0)
+	if ((rc = kstrtoint(buf, 0, &raw)) < 0)
 		return rc;
 	if ((txpsr = dw1000_lookup_txpsr(raw)) < 0)
 		return txpsr;
-	if ((rc = dw1000_configure_txpsr(dw, txpsr)) != 0)
+	if ((rc = dw1000_configure_txpsr(dw, txpsr)) < 0)
 		return rc;
 	return count;
 }
@@ -3314,9 +3314,9 @@ static ssize_t dw1000_store_tx_power(struct device *dev,
 	unsigned power;
 	int rc;
 
-	if ((rc = kstrtouint(buf, 0, &power)) != 0)
+	if ((rc = kstrtouint(buf, 0, &power)) < 0)
 		return rc;
-	if ((rc = dw1000_configure_tx_power(dw, power)) != 0)
+	if ((rc = dw1000_configure_tx_power(dw, power)) < 0)
 		return rc;
 	return count;
 }
@@ -3338,9 +3338,9 @@ static ssize_t dw1000_store_smart_power(struct device *dev,
 	bool smart_power;
 	int rc;
 
-	if (strtobool(buf, &smart_power) < 0)
-		return -EINVAL;
-	if ((rc = dw1000_configure_smart_power(dw, smart_power)) != 0)
+	if ((rc = strtobool(buf, &smart_power)) < 0)
+		return rc;
+	if ((rc = dw1000_configure_smart_power(dw, smart_power)) < 0)
 		return rc;
 	return count;
 }
@@ -3364,9 +3364,9 @@ static ssize_t dw1000_store_frame_filter(struct device *dev,
 	unsigned int filter;
 	int rc;
 	
-	if ((rc = kstrtouint(buf, 0, &filter)) != 0)
+	if ((rc = kstrtouint(buf, 0, &filter)) < 0)
 		return rc;
-	if ((rc = dw1000_configure_frame_filter(dw, filter)) != 0)
+	if ((rc = dw1000_configure_frame_filter(dw, filter)) < 0)
 		return rc;
 	return count;
 }
@@ -3390,7 +3390,7 @@ static ssize_t dw1000_store_snr_threshold(struct device *dev,
 	unsigned int snr_threshold;
 	int rc;
 	
-	if ((rc = kstrtouint(buf, 0, &snr_threshold)) != 0)
+	if ((rc = kstrtouint(buf, 0, &snr_threshold)) < 0)
 		return rc;
 	dw->snr_threshold = snr_threshold;
 	return count;
@@ -3414,7 +3414,7 @@ static ssize_t dw1000_store_fpr_threshold(struct device *dev,
 	unsigned int fpr_threshold;
 	int rc;
 	
-	if ((rc = kstrtouint(buf, 0, &fpr_threshold)) != 0)
+	if ((rc = kstrtouint(buf, 0, &fpr_threshold)) < 0)
 		return rc;
 	dw->fpr_threshold = fpr_threshold;
 	return count;
@@ -3438,7 +3438,7 @@ static ssize_t dw1000_store_noise_threshold(struct device *dev,
 	unsigned int noise_threshold;
 	int rc;
 	
-	if ((rc = kstrtouint(buf, 0, &noise_threshold)) != 0)
+	if ((rc = kstrtouint(buf, 0, &noise_threshold)) < 0)
 		return rc;
 	dw->noise_threshold = noise_threshold;
 	return count;
@@ -3462,7 +3462,7 @@ static ssize_t dw1000_store_stats_interval(struct device *dev,
 	unsigned int interval;
 	int rc;
 	
-	if ((rc = kstrtouint(buf, 0, &interval)) != 0)
+	if ((rc = kstrtouint(buf, 0, &interval)) < 0)
 		return rc;
 	dw->stats.interval = interval;
 	if (interval > 0)
@@ -3498,7 +3498,7 @@ static ssize_t dw1000_store_error_inject(struct device *dev,
 	if (!error)
 		return -EINVAL;
 	if (*col) {
-		if ((rc = kstrtoint(col+1, 0, &value)) != 0)
+		if ((rc = kstrtoint(col+1, 0, &value)) < 0)
 			return rc;
 	}
 	
@@ -3599,7 +3599,7 @@ static ssize_t dw1000_store_dw1000_##_name(struct device *dev,                \
         struct dw1000 *dw = dev_to_dw1000(dev);                               \
         unsigned int value;                                                   \
         int rc;                                                               \
-        if ((rc = kstrtouint(buf, 0, &value)) != 0)                           \
+        if ((rc = kstrtouint(buf, 0, &value)) < 0)                            \
                 return rc;                                                    \
         dw->stats.count[DW1000_STATS_##_enum] = value;                        \
         return count;                                                         \
