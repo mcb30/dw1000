@@ -1223,6 +1223,61 @@ static int dw1000_load_config(struct dw1000 *dw)
 }
 
 /**
+ * dw1000_load_profile() - Load calibration profile
+ *
+ * @dw:			DW1000 device
+ * @return:		0 on success or -errno
+ */
+static int dw1000_load_profile(struct dw1000 *dw, const char *profile)
+{
+	struct dw1000_config *cfg = &dw->cfg;
+	struct dw1000_calib *calib = NULL;
+	int i;
+
+	/* Find a matching profile */
+	for (i=0; i<DW1000_MAX_CALIBS; i++) {
+		if (!strcmp(dw->calib[i].id, profile)) {
+			calib = &dw->calib[i];
+			break;
+		}
+	}
+	if (!calib) {
+		dev_warn(dw->dev, "calibration profile \"%s\" not found\n",
+			 profile);
+		return -EINVAL;
+	}
+
+	dev_info(dw->dev, "loading calibration profile \"%s\"\n", profile);
+
+	/* Lock configuration */
+	mutex_lock(&cfg->mutex);
+
+	/* Set changed parameters */
+	cfg->pending |=
+		DW1000_CONFIGURE_CHANNEL |
+		DW1000_CONFIGURE_PRF |
+		DW1000_CONFIGURE_ANTD |
+		DW1000_CONFIGURE_TX_POWER;
+
+	/* Set channel in the 802.15.4 stack */
+	dw->hw->phy->current_channel = calib->ch;
+
+	/* Record values */
+	cfg->channel = calib->ch;
+	cfg->prf = calib->prf;
+	cfg->antd[cfg->prf] = calib->antd;
+	cfg->txpwr[0] = (calib->power >>  0) & 0xff;
+	cfg->txpwr[1] = (calib->power >>  8) & 0xff;
+	cfg->txpwr[2] = (calib->power >> 16) & 0xff;
+	cfg->txpwr[3] = (calib->power >> 24) & 0xff;
+
+	/* Unlock configuration */
+	mutex_unlock(&cfg->mutex);
+
+	return 0;
+}
+
+/**
  * dw1000_reconfigure() - Reconfigure radio parameters
  *
  * @dw:			DW1000 device
@@ -1546,52 +1601,11 @@ static int dw1000_configure_frame_filter(struct dw1000 *dw, unsigned int filter)
  */
 static int dw1000_configure_profile(struct dw1000 *dw, const char *profile)
 {
-	struct dw1000_config *cfg = &dw->cfg;
-	struct dw1000_calib *calib = NULL;
 	int rc;
-	int i;
-
-	/* Find a matching profile */
-	for (i=0; i<DW1000_MAX_CALIBS; i++) {
-		if (!strcmp(dw->calib[i].id, profile)) {
-			calib = &dw->calib[i];
-			break;
-		}
-	}
-	if (!calib) {
-		dev_warn(dw->dev, "calibration profile \"%s\" not found\n",
-			 profile);
-		return -EINVAL;
-	}
-
-	dev_info(dw->dev, "loading calibration profile \"%s\"\n", profile);
-
-	/* Lock configuration */
-	mutex_lock(&cfg->mutex);
-
-	/* Set changed parameters */
-	cfg->pending |=
-		DW1000_CONFIGURE_CHANNEL |
-		DW1000_CONFIGURE_PRF |
-		DW1000_CONFIGURE_ANTD |
-		DW1000_CONFIGURE_TX_POWER |
-		DW1000_CONFIGURE_SMART_POWER;
-
-	/* Set channel in the 802.15.4 stack */
-	dw->hw->phy->current_channel = calib->ch;
 	
-	/* Record values */
-	cfg->channel = calib->ch;
-	cfg->prf = calib->prf;
-	cfg->antd[cfg->prf] = calib->antd;
-	cfg->txpwr[0] = (calib->power >>  0) & 0xff;
-	cfg->txpwr[1] = (calib->power >>  8) & 0xff;
-	cfg->txpwr[2] = (calib->power >> 16) & 0xff;
-	cfg->txpwr[3] = (calib->power >> 24) & 0xff;
-	cfg->smart_power = !!(calib->power & 0xff000000);
-
-	/* Unlock configuration */
-	mutex_unlock(&cfg->mutex);
+	/* Load calibration profile */
+	if ((rc = dw1000_load_profile(dw, profile)) != 0)
+		return rc;
 
 	/* Reconfigure changes */
 	rc = dw1000_reconfigure(dw);
@@ -4171,12 +4185,12 @@ static int dw1000_load_lde(struct dw1000 *dw)
 }
 
 /**
- * dw1000_load_profiles() - Load configuration profiles
+ * dw1000_load_calibrations() - Load calibration profiles
  *
  * @dw:			DW1000 device
  * @return:		0 on success or -errno
  */
-static int dw1000_load_profiles(struct dw1000 *dw)
+static int dw1000_load_calibrations(struct dw1000 *dw)
 {
 	struct device_node *node, *np = NULL;
 	const char *name, *profile;
@@ -4230,7 +4244,8 @@ static int dw1000_load_profiles(struct dw1000 *dw)
 	/* Default profile */
 	if (of_property_read_string(dw->dev->of_node,
 				    "decawave,default", &profile) == 0) {
-		dw1000_configure_profile(dw,profile);
+		/* Ignore errors */
+		dw1000_load_profile(dw,profile);
 	}
 
 	return 0;
@@ -5070,8 +5085,8 @@ static int dw1000_spi_probe(struct spi_device *spi)
 		dev_err(dw->dev, "Load OTP/DT delays failed: %d\n", rc);
 		goto err_load_otp;
 	}
-	if ((rc = dw1000_load_profiles(dw)) != 0) {
-		dev_err(dw->dev, "Load OTP/DT profiles failed: %d\n", rc);
+	if ((rc = dw1000_load_calibrations(dw)) != 0) {
+		dev_err(dw->dev, "Load OTP/DT calibrations failed: %d\n", rc);
 		goto err_load_otp;
 	}
 	
